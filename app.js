@@ -2214,6 +2214,10 @@ function openObjectTextEditor(entry, obj, opts) {
   syncEditorSize();
   editor.style.left = (obj.x - TEXT_PAD - entry.cropX) * state.zoom + "px";
   editor.style.top = (obj.y - TEXT_PAD - entry.cropY) * state.zoom + "px";
+  // 編輯框本身的 content-box（文字＋padding）剛好等於物件的外框，中心點跟畫布上轉的中心一樣，
+  // 用預設的 transform-origin（50% 50%）轉，角度才會跟沒在編輯時畫出來的樣子一致，
+  // 不然雙擊編輯時框框會突然變回「沒轉過」的樣子。
+  editor.style.transform = obj.rotation ? `rotate(${obj.rotation}deg)` : "";
   editor.addEventListener("input", syncEditorSize);
 
   entry.innerEl.appendChild(editor);
@@ -2275,6 +2279,9 @@ function openShapeTextEditor(entry, obj) {
   editor.style.textAlign = "center";
   editor.style.resize = "none";
   editor.style.background = "rgba(255,255,255,.9)";
+  // 編輯框的中心點就是 getBBox(obj) 的中心，用預設 transform-origin 轉，角度才會跟沒在編輯時
+  // 畫出來的樣子一致，不會雙擊編輯時突然變回沒轉過的樣子。
+  editor.style.transform = obj.rotation ? `rotate(${obj.rotation}deg)` : "";
   entry.innerEl.appendChild(editor);
   editor.focus();
   editor.select();
@@ -2543,6 +2550,10 @@ function copySelectedObject() {
   toast(n > 1 ? `已複製 ${n} 個物件` : "已複製物件");
 }
 
+function getPageRotation(entry) {
+  return (((entry.baseRotation + entry.userDelta) % 360) + 360) % 360;
+}
+
 function pasteClipboardObject() {
   const clip = state.objectClipboard;
   if (!clip) return;
@@ -2550,9 +2561,16 @@ function pasteClipboardObject() {
   if (!targetEntry) return;
   // 貼回原本複製的那一頁才稍微偏移位置（才看得出是新貼的一份）；貼到別頁就直接貼在同一個位置
   const offset = targetEntry === clip.sourceEntry ? 16 : 0;
+  // 物件的 rotation 是相對於「頁面本身未旋轉的原始方向」，如果來源頁跟目的頁的頁面旋轉角度
+  // 不一樣（例如一個是直的、一個是橫的），同樣的 rotation 畫面上看起來就會不一樣。
+  // 這裡補上兩頁旋轉角度的差，讓貼過去的物件「畫面上看起來」維持原本一樣的方向。
+  const rotationFix = getPageRotation(clip.sourceEntry) - getPageRotation(targetEntry);
   const newObjs = clip.objs.map((o) => {
     const obj = JSON.parse(JSON.stringify(o, cleanReplacer));
     obj.id = newId();
+    if (rotationFix && typeof obj.rotation === "number") {
+      obj.rotation = normalizeAngle(obj.rotation + rotationFix);
+    }
     if (offset) {
       if (obj.points) obj.points = obj.points.map((p) => ({ x: p.x + offset, y: p.y + offset }));
       else {
