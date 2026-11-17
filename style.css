@@ -153,6 +153,9 @@ button.tool-btn.active { background: #2563eb; border-color: #2563eb; }
 .modal label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
 .modal label.checkbox { flex-direction: row; align-items: center; gap: 8px; }
 .modal label[hidden] { display: none; }
+.modal-row { display: flex; gap: 10px; }
+.modal-row label { flex: 1; }
+.modal-row[hidden] { display: none; }
 .wm-image-preview { display: flex; align-items: center; gap: 8px; }
 .wm-image-preview[hidden] { display: none; }
 .wm-image-preview img { max-width: 48px; max-height: 48px; border: 1px solid #ccc; border-radius: 4px; }

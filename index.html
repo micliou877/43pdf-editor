@@ -18,6 +18,7 @@
   <div class="group">
     <button id="btnOpen" title="開啟一個新的 PDF（會取代目前內容）">開啟檔案</button>
     <button id="btnAppend" title="加入另一份 PDF，接在目前頁面後面（合併）">加入合併</button>
+    <button id="btnBlankPage" title="建立空白頁面，可自訂紙張尺寸；若尚未開啟任何檔案，會直接開啟成新文件，否則會加到目前文件最後面">📃 空白頁面</button>
     <button id="btnDownload" class="primary" disabled>下載 PDF</button>
   </div>
 
@@ -148,6 +149,39 @@
       <button id="pnClear">清除頁碼</button>
       <button id="pnCancel">取消</button>
       <button id="pnApply" class="primary">套用到所有頁面</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="blankPageModal" hidden>
+  <div class="modal">
+    <h3>新增空白頁面</h3>
+    <label>紙張尺寸
+      <select id="bpPreset">
+        <option value="A3">A3（297 × 420 mm）</option>
+        <option value="A4" selected>A4（210 × 297 mm）</option>
+        <option value="A5">A5（148 × 210 mm）</option>
+        <option value="B5">B5（176 × 250 mm）</option>
+        <option value="Letter">Letter（215.9 × 279.4 mm）</option>
+        <option value="Legal">Legal（215.9 × 355.6 mm）</option>
+        <option value="custom">自訂尺寸…</option>
+      </select>
+    </label>
+    <div class="modal-row" id="bpCustomRow" hidden>
+      <label>寬度（mm）
+        <input type="number" id="bpWidth" min="10" max="2000" step="1" value="210">
+      </label>
+      <label>高度（mm）
+        <input type="number" id="bpHeight" min="10" max="2000" step="1" value="297">
+      </label>
+    </div>
+    <label class="checkbox"><input type="checkbox" id="bpLandscape"> 橫向</label>
+    <label>頁數
+      <input type="number" id="bpCount" min="1" max="200" step="1" value="1">
+    </label>
+    <div class="modal-actions">
+      <button id="bpCancel">取消</button>
+      <button id="bpApply" class="primary">建立</button>
     </div>
   </div>
 </div>

@@ -580,6 +580,38 @@ async function insertBlankPage(referenceEntry) {
   }
 }
 
+async function appendBlankPages(wPt, hPt, count) {
+  showLoading("建立空白頁面中…");
+  try {
+    const blankDoc = await PDFDocument.create();
+    for (let i = 0; i < count; i++) blankDoc.addPage([wPt, hPt]);
+    const bytes = await blankDoc.save();
+    const buffer = bytes.slice().buffer;
+    const pdfjsDoc = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
+    const sourceIndex = state.sources.length;
+    state.sources.push({ buffer, pdfjsDoc, libDoc: null, fileName: "空白頁面.pdf" });
+
+    for (let i = 1; i <= pdfjsDoc.numPages; i++) {
+      const pdfjsPage = await pdfjsDoc.getPage(i);
+      const entry = {
+        sourceIndex, pageIndexInSource: i - 1, pdfjsPage,
+        baseRotation: 0, userDelta: 0, objects: [], watermark: null, history: [],
+      };
+      state.pages.push(entry);
+      await buildPageDOM(entry);
+      buildThumb(entry);
+    }
+    setControlsEnabled(true);
+    scheduleAutosave();
+    toast(`已新增 ${count} 張空白頁面`);
+  } catch (err) {
+    console.error(err);
+    toast("新增空白頁面失敗：" + err.message, true);
+  } finally {
+    hideLoading();
+  }
+}
+
 async function deleteSinglePage(entry) {
   if (state.pages.length <= 1) {
     toast("不能刪除全部頁面", true);
@@ -2440,6 +2472,46 @@ $("#wmApply").addEventListener("click", () => {
   });
   $("#watermarkModal").hidden = true;
   toast(`已套用浮水印到 ${state.pages.length} 頁`);
+});
+
+/* ---------------- 新增空白頁面（可自訂紙張尺寸） ---------------- */
+
+const BLANK_PAGE_PRESETS = {
+  A3: [297, 420], A4: [210, 297], A5: [148, 210], B5: [176, 250],
+  Letter: [215.9, 279.4], Legal: [215.9, 355.6],
+};
+function updateBlankPageModalUI() {
+  const preset = $("#bpPreset").value;
+  $("#bpCustomRow").hidden = preset !== "custom";
+  if (preset !== "custom") {
+    const [w, h] = BLANK_PAGE_PRESETS[preset];
+    $("#bpWidth").value = w;
+    $("#bpHeight").value = h;
+  }
+}
+$("#bpPreset").addEventListener("change", updateBlankPageModalUI);
+function openBlankPageModal() {
+  $("#bpPreset").value = "A4";
+  $("#bpLandscape").checked = false;
+  $("#bpCount").value = 1;
+  updateBlankPageModalUI();
+  $("#blankPageModal").hidden = false;
+}
+$("#btnBlankPage").addEventListener("click", openBlankPageModal);
+$("#bpCancel").addEventListener("click", () => ($("#blankPageModal").hidden = true));
+$("#bpApply").addEventListener("click", async () => {
+  let w = Number($("#bpWidth").value), h = Number($("#bpHeight").value);
+  if (!(w > 0) || !(h > 0)) {
+    toast("請輸入正確的寬度與高度", true);
+    return;
+  }
+  const landscape = $("#bpLandscape").checked;
+  if (landscape && w < h) { const t = w; w = h; h = t; }
+  else if (!landscape && w > h) { const t = w; w = h; h = t; }
+  const count = Math.max(1, Math.min(200, Math.round(Number($("#bpCount").value) || 1)));
+  const wPt = (w * 72) / 25.4, hPt = (h * 72) / 25.4;
+  $("#blankPageModal").hidden = true;
+  await appendBlankPages(wPt, hPt, count);
 });
 
 /* ---------------- 頁碼（全域設定，套用到所有頁面；數字依頁面目前順序即時算出） ---------------- */
