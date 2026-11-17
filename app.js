@@ -1054,17 +1054,28 @@ function drawObject(ctx, obj, scale, entry) {
   else if (obj.type === "indexmark") drawIndexMarkObject(ctx, obj, scale, entry);
 }
 
+// 文字物件量測用的共用離屏 canvas：編輯時的輸入框跟最後畫出來的結果都用同一套公式算尺寸，
+// 這樣編輯中看到的框框大小就會跟排版完成後一模一樣，不用自己憑感覺拖/縮。
+const textMeasureCtx = document.createElement("canvas").getContext("2d");
+function measureTextBoxPt(text, fontSize) {
+  textMeasureCtx.font = `${fontSize}px "Microsoft JhengHei","Noto Sans TC",sans-serif`;
+  const lines = (text || "").split("\n");
+  const lineHeightPt = fontSize * 1.3;
+  const widthsPt = lines.map((l) => textMeasureCtx.measureText(l).width);
+  const boxWPt = Math.max(...widthsPt, 10);
+  const boxHPt = lineHeightPt * Math.max(lines.length, 1);
+  return { w: boxWPt + TEXT_PAD * 2, h: boxHPt + TEXT_PAD * 2 };
+}
+
 function drawTextObject(ctx, obj, scale) {
   const fontPx = Math.max(1, obj.fontSize * scale);
   ctx.font = `${fontPx}px "Microsoft JhengHei","Noto Sans TC",sans-serif`;
   ctx.textBaseline = "top";
   const lines = (obj.text || "").split("\n");
   const lineHeightPt = obj.fontSize * 1.3;
-  const widthsPt = lines.map((l) => ctx.measureText(l).width / scale);
-  const boxWPt = Math.max(...widthsPt, 10);
-  const boxHPt = lineHeightPt * Math.max(lines.length, 1);
-  obj._w = boxWPt + TEXT_PAD * 2;
-  obj._h = boxHPt + TEXT_PAD * 2;
+  const box = measureTextBoxPt(obj.text, obj.fontSize);
+  obj._w = box.w;
+  obj._h = box.h;
 
   const x = obj.x * scale, y = obj.y * scale;
   const padPx = TEXT_PAD * scale;
@@ -2165,13 +2176,46 @@ function openObjectTextEditor(entry, obj, opts) {
   obj._editing = true;
   redraw(entry);
 
+  // 編輯框要直接顯示「排版完成後的樣子」：大小依目前文字內容即時算出（跟 drawTextObject
+  // 用同一套公式），底色／外框也比照 obj.bg／obj.border，不再是固定的藍框＋可以手動拖拉縮放
+  // ——反正文字物件的大小本來就是純粹由內容算出來的，手動拖的大小最後也會被蓋掉。
   const editor = document.createElement("textarea");
   editor.className = "inline-editor";
   editor.value = obj.text;
-  editor.style.left = (obj.x - entry.cropX) * state.zoom + "px";
-  editor.style.top = (obj.y - entry.cropY) * state.zoom + "px";
+  // box-sizing 用 content-box：寬高只算「文字內容」本身，padding／外框都另外疊加、
+  // 不會反過來把內容區擠變窄——這樣文字換行的位置才會跟最後畫出來的結果一致。
+  // 外框改用 box-shadow（inset，不佔版面）模擬，才會跟 canvas 的 strokeRect（畫在邊線正中央、
+  // 不會吃掉內部空間）一致；如果用真的 CSS border 配 border-box，邊框粗細會讓內容區變窄，
+  // 造成文字提早換行，框框就不是「最後排版的樣子」了。
+  editor.style.boxSizing = "content-box";
+  editor.style.resize = "none";
+  editor.style.overflow = "hidden";
+  editor.style.minWidth = "0";
+  editor.style.minHeight = "0";
+  editor.style.border = "none";
   editor.style.fontSize = Math.max(10, obj.fontSize * state.zoom) + "px";
+  editor.style.lineHeight = "1.3";
+  editor.style.padding = TEXT_PAD * state.zoom + "px";
   editor.style.color = obj.color;
+  editor.style.background = obj.bg && obj.bg.enabled ? obj.bg.color : "transparent";
+  editor.style.boxShadow = obj.border && obj.border.enabled
+    ? `inset 0 0 0 ${Math.max(1, obj.border.width * state.zoom)}px ${obj.border.color}`
+    : "none";
+  // 不管本來有沒有外框，都加一圈淡淡的提示外框（outline 不佔版面、不影響最終大小），
+  // 方便看出目前正在編輯哪一個，不會跟排版用的實際外框混在一起
+  editor.style.outline = "1px dashed rgba(37,99,235,.6)";
+  editor.style.outlineOffset = "2px";
+
+  const syncEditorSize = () => {
+    const box = measureTextBoxPt(editor.value, obj.fontSize);
+    editor.style.width = (box.w - TEXT_PAD * 2) * state.zoom + "px";
+    editor.style.height = (box.h - TEXT_PAD * 2) * state.zoom + "px";
+  };
+  syncEditorSize();
+  editor.style.left = (obj.x - TEXT_PAD - entry.cropX) * state.zoom + "px";
+  editor.style.top = (obj.y - TEXT_PAD - entry.cropY) * state.zoom + "px";
+  editor.addEventListener("input", syncEditorSize);
+
   entry.innerEl.appendChild(editor);
   editor.focus();
   if (opts.selectAll) editor.select();
