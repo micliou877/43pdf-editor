@@ -10,6 +10,9 @@ const { PDFDocument, degrees } = PDFLib;
 
 const CSS_SCALE = 1.0;      // 100% 縮放時，1 PDF point = 1 CSS px
 const BACKING_DPR = 1.5;    // 畫面用的實際像素密度（清晰度）
+// 頁面左右兩側多留一塊「暫放區」，可以把物件拖出頁面範圍外暫時擺放（例如表格內容被頁面
+// 邊緣裁掉時，先把備註文字放在旁邊）；這塊區域只存在於畫面上，匯出 PDF 時不會印出來。
+const PASTEBOARD_MARGIN = 150;
 const TEXT_PAD = 4;         // 文字物件背景／外框的內距（point）
 const ROTATE_HANDLE_DIST = 26; // 旋轉把手離物件上緣的距離（point）
 
@@ -295,11 +298,17 @@ async function renderPage(entry, zoom) {
   ctx.setTransform(BACKING_DPR, 0, 0, BACKING_DPR, 0, 0);
   await entry.pdfjsPage.render({ canvasContext: ctx, viewport }).promise;
 
+  // overlay-canvas 比頁面本身左右各多留一塊暫放區的寬度，用來放暫時拖出頁面外的物件；
+  // 上下不留（避免跟上下相鄰頁面的間距重疊），畫面上看起來就是頁面左右兩側多了一截空白。
+  const marginPx = Math.round(PASTEBOARD_MARGIN * zoom * CSS_SCALE);
   const overlay = entry.overlayCanvasEl;
-  overlay.width = Math.round(w * BACKING_DPR);
-  overlay.height = Math.round(h * BACKING_DPR);
-  overlay.style.width = w + "px";
-  overlay.style.height = h + "px";
+  const ow = w + marginPx * 2, oh = h;
+  overlay.width = Math.round(ow * BACKING_DPR);
+  overlay.height = Math.round(oh * BACKING_DPR);
+  overlay.style.width = ow + "px";
+  overlay.style.height = oh + "px";
+  overlay.style.left = -marginPx + "px";
+  overlay.style.top = "0px";
 
   entry.innerEl.style.width = w + "px";
   entry.innerEl.style.height = h + "px";
@@ -983,7 +992,7 @@ function setSelected(sel) {
 function redraw(entry) {
   const ctx = entry.overlayCanvasEl.getContext("2d");
   const scale = BACKING_DPR * state.zoom;
-  renderPageObjects(entry, ctx, scale, { withHandles: true });
+  renderPageObjects(entry, ctx, scale, { withHandles: true, pasteboard: true });
 }
 
 const HIGHLIGHT_OPACITY = 0.42; // 同一批連續畫的螢光筆，不管塗幾筆、疊幾次，最後都只套用「一次」這個透明度，不會把底下蓋掉
@@ -991,9 +1000,14 @@ const HIGHLIGHT_OPACITY = 0.42; // 同一批連續畫的螢光筆，不管塗幾
 function renderPageObjects(entry, ctx, scale, opts) {
   opts = opts || {};
   if (!opts.noClear) ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  // 暫放區只在畫面上的 overlay canvas 才有（opts.pasteboard），匯出時完全不套用，
+  // 暫放區裡的物件不會被印出來。畫布可能比頁面本身還寬（左右留了暫放區），
+  // 所以頁面本身的實際像素寬高要另外算，不能直接拿 ctx.canvas.width/height 當頁面大小。
+  const marginX = opts.pasteboard ? PASTEBOARD_MARGIN : 0;
+  const pageW = (entry.cropW || 0) * scale, pageH = (entry.cropH || 0) * scale;
   ctx.save();
-  ctx.translate(-(entry.cropX || 0) * scale, -(entry.cropY || 0) * scale);
-  if (entry.watermark) drawWatermarkObj(ctx, entry.watermark, scale, ctx.canvas.width, ctx.canvas.height, entry);
+  ctx.translate((marginX - (entry.cropX || 0)) * scale, -(entry.cropY || 0) * scale);
+  if (entry.watermark) drawWatermarkObj(ctx, entry.watermark, scale, pageW, pageH, entry);
 
   const drawOne = (obj) => {
     if (obj.rotation && obj.type !== "indexmark") {
@@ -1032,8 +1046,14 @@ function renderPageObjects(entry, ctx, scale, opts) {
     drawSelectionUI(ctx, state.selected.objs, scale);
   }
   ctx.restore();
-  // 頁碼畫在 restore 之後（也就是不受裁切位移影響），永遠貼齊目前看得到的頁面邊緣
-  if (state.pageNumberConfig) drawPageNumberObj(ctx, state.pageNumberConfig, scale, ctx.canvas.width, ctx.canvas.height, entry);
+  // 頁碼畫在裁切位移之外（不受裁切影響，永遠貼齊目前看得到的頁面邊緣），但還是要跟著
+  // 暫放區的位移平移，頁碼才會貼在「頁面」真正的邊緣，不會因為左右多留的暫放區而跑位。
+  if (state.pageNumberConfig) {
+    ctx.save();
+    ctx.translate(marginX * scale, 0);
+    drawPageNumberObj(ctx, state.pageNumberConfig, scale, pageW, pageH, entry);
+    ctx.restore();
+  }
 }
 
 // 頁碼：cfg = { format, startAt, skipFirst, position, fontSize, color }
@@ -1531,11 +1551,11 @@ function drawRotateHandleGlyph(ctx, cx, topY, rotY) {
   ctx.stroke();
 }
 
-// 框選多個物件時的預覽框：直接畫在 overlay canvas 上（跟裁切預覽框不同，框選不需要畫到頁面外面）
+// 框選多個物件時的預覽框：直接畫在 overlay canvas 上，框選範圍可以延伸到頁面兩側的暫放區
 function drawMarqueePreview(entry, start, current) {
   const ctx = entry.overlayCanvasEl.getContext("2d");
   const scale = BACKING_DPR * state.zoom;
-  const x0 = Math.min(start.x, current.x) - entry.cropX;
+  const x0 = Math.min(start.x, current.x) - entry.cropX + PASTEBOARD_MARGIN;
   const y0 = Math.min(start.y, current.y) - entry.cropY;
   const w = Math.abs(current.x - start.x);
   const h = Math.abs(current.y - start.y);
@@ -1666,8 +1686,9 @@ function eventToCanvasXY(entry, e) {
 function eventToPoint(entry, e) {
   const xy = eventToCanvasXY(entry, e);
   const s = BACKING_DPR * state.zoom;
-  // 換算回「原始（未裁切）頁面」座標系，物件的 x/y 才會跟裁切範圍無關、永遠對齊內容本身
-  return { x: xy.x / s + entry.cropX, y: xy.y / s + entry.cropY };
+  // 換算回「原始（未裁切）頁面」座標系，物件的 x/y 才會跟裁切範圍無關、永遠對齊內容本身；
+  // overlay-canvas 左邊比頁面多留了一截暫放區（見 PASTEBOARD_MARGIN），要先扣掉才會對齊
+  return { x: xy.x / s + entry.cropX - PASTEBOARD_MARGIN, y: xy.y / s + entry.cropY };
 }
 
 /* ---------------- 標註互動：建立 / 選取 / 移動 / 縮放 ---------------- */
