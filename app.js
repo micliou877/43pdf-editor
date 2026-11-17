@@ -2193,13 +2193,19 @@ function openObjectTextEditor(entry, obj, opts) {
   editor.style.minWidth = "0";
   editor.style.minHeight = "0";
   editor.style.border = "none";
-  editor.style.fontSize = Math.max(10, obj.fontSize * state.zoom) + "px";
+  // 縮放很小時字級會被下限頂住（下面用 Math.max(10,...)，避免小到打字看不到），這時字級
+  // 「實際放大的比例」已經不等於 state.zoom 了。框框的寬高如果還是用 state.zoom 去算，
+  // 就會比實際文字還窄，造成文字被擠到一行只能放一個字、框框變成一直條——這裡統一改用
+  // 「字級實際被放大的比例」(fontScale) 來算框框大小，兩者才會一致，不會提早換行。
+  const fontPx = Math.max(10, obj.fontSize * state.zoom);
+  const fontScale = fontPx / obj.fontSize;
+  editor.style.fontSize = fontPx + "px";
   editor.style.lineHeight = "1.3";
-  editor.style.padding = TEXT_PAD * state.zoom + "px";
+  editor.style.padding = TEXT_PAD * fontScale + "px";
   editor.style.color = obj.color;
   editor.style.background = obj.bg && obj.bg.enabled ? obj.bg.color : "transparent";
   editor.style.boxShadow = obj.border && obj.border.enabled
-    ? `inset 0 0 0 ${Math.max(1, obj.border.width * state.zoom)}px ${obj.border.color}`
+    ? `inset 0 0 0 ${Math.max(1, obj.border.width * fontScale)}px ${obj.border.color}`
     : "none";
   // 不管本來有沒有外框，都加一圈淡淡的提示外框（outline 不佔版面、不影響最終大小），
   // 方便看出目前正在編輯哪一個，不會跟排版用的實際外框混在一起
@@ -2208,8 +2214,8 @@ function openObjectTextEditor(entry, obj, opts) {
 
   const syncEditorSize = () => {
     const box = measureTextBoxPt(editor.value, obj.fontSize);
-    editor.style.width = (box.w - TEXT_PAD * 2) * state.zoom + "px";
-    editor.style.height = (box.h - TEXT_PAD * 2) * state.zoom + "px";
+    editor.style.width = (box.w - TEXT_PAD * 2) * fontScale + "px";
+    editor.style.height = (box.h - TEXT_PAD * 2) * fontScale + "px";
   };
   syncEditorSize();
   editor.style.left = (obj.x - TEXT_PAD - entry.cropX) * state.zoom + "px";
