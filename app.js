@@ -2801,6 +2801,9 @@ function addImageFileInput(container, label, onPicked) {
   container.appendChild(l);
   return input;
 }
+// 常用顏色快速選取：點一下就套用，不用每次都打開色盤慢慢挑，也方便多個物件要選同一個顏色時對齊
+const PRESET_COLORS = ["#000000", "#ffffff", "#ff0000", "#ff8c00", "#ffeb3b", "#22c55e", "#2563eb", "#9333ea", "#6b7280"];
+
 function addColorInput(container, label, value, onChange) {
   const l = document.createElement("label");
   l.textContent = label;
@@ -2809,6 +2812,23 @@ function addColorInput(container, label, value, onChange) {
   input.value = value;
   input.addEventListener("input", () => onChange(input.value));
   l.appendChild(input);
+
+  const swatches = document.createElement("div");
+  swatches.className = "color-swatches";
+  PRESET_COLORS.forEach((hex) => {
+    const sw = document.createElement("button");
+    sw.type = "button";
+    sw.className = "color-swatch";
+    sw.style.background = hex;
+    sw.title = hex;
+    sw.addEventListener("click", () => {
+      input.value = hex;
+      onChange(hex);
+    });
+    swatches.appendChild(sw);
+  });
+  l.appendChild(swatches);
+
   container.appendChild(l);
   return input;
 }
