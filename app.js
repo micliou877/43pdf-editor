@@ -1428,7 +1428,7 @@ function drawWatermarkObj(ctx, wm, scale, cw, ch, entry) {
 // （多選時每個物件都用這個畫一次外框，把手只出現在整體的外框上，見 drawSelectionUI）
 function drawSingleSelectionUI(ctx, obj, scale, outlineOnly) {
   const b = getBBox(obj);
-  const transformable = isTransformable(obj);
+  const transformable = isTransformable(obj) && !obj.locked;
   // 索引符號的外框／縮放把手不隨旋轉變化（只有裡面的三角指標會轉），所以選取框也要維持不轉
   const wholeRotates = transformable && obj.rotation && obj.type !== "indexmark";
   ctx.save();
@@ -1599,7 +1599,7 @@ function isTransformable(obj) {
   return obj.type === "text" || obj.type === "rect" || obj.type === "ellipse" || obj.type === "cloud" || obj.type === "image" || obj.type === "indexmark";
 }
 function isOnResizeHandle(obj, pt) {
-  if (!isTransformable(obj)) return false;
+  if (!isTransformable(obj) || obj.locked) return false;
   const lp = toLocalPointForBBox(obj, pt);
   const b = getBBox(obj);
   const hx = b.x + b.w, hy = b.y + b.h;
@@ -1607,7 +1607,7 @@ function isOnResizeHandle(obj, pt) {
   return Math.hypot(lp.x - hx, lp.y - hy) <= thresholdPt;
 }
 function isOnRotateHandle(obj, pt) {
-  if (!isTransformable(obj)) return false;
+  if (!isTransformable(obj) || obj.locked) return false;
   const lp = toLocalPoint(obj, pt);
   const b = getBBox(obj);
   const hx = b.x + b.w / 2, hy = b.y - ROTATE_HANDLE_DIST;
@@ -1724,7 +1724,12 @@ function attachPageInteractions(entry) {
     if (state.tool !== "pan") return;
     const pt = eventToPoint(entry, e);
     const hit = hitTest(entry, pt);
-    if (hit && hit.type === "text") {
+    if (hit && hit.locked) {
+      setSelected({ entry, objs: [hit] });
+      redraw(entry);
+      renderToolOptions();
+      toast("此物件已鎖定，請先解鎖才能編輯", true);
+    } else if (hit && hit.type === "text") {
       setSelected({ entry, objs: [hit] });
       redraw(entry);
       renderToolOptions();
@@ -1795,10 +1800,14 @@ function startPanInteraction(entry, pt, e) {
   if (selHere && selHere.objs.length > 1) {
     const groupBBox = getSelectionBBox(selHere.objs);
     if (isOnGroupResizeHandle(groupBBox, pt)) {
-      state.interaction = {
-        mode: "groupResize", entry, objs: selHere.objs, start: pt,
-        origs: selHere.objs.map(cloneObj), groupBBox, historyPushed: false,
-      };
+      // 鎖定的物件不參與縮放，但整體外框仍依全部選取物件計算，縮放基準點才不會跑掉
+      const resizeTargets = selHere.objs.filter((o) => !o.locked);
+      if (resizeTargets.length) {
+        state.interaction = {
+          mode: "groupResize", entry, objs: resizeTargets, start: pt,
+          origs: resizeTargets.map(cloneObj), groupBBox, historyPushed: false,
+        };
+      }
       return;
     }
   }
@@ -1823,7 +1832,11 @@ function startPanInteraction(entry, pt, e) {
       state.interaction = null;
     } else {
       setSelected({ entry, objs });
-      state.interaction = { mode: "move", entry, objs, start: pt, origs: objs.map(cloneObj), historyPushed: false };
+      // 鎖定的物件不能被拖曳移動；多選時其餘未鎖定的物件仍可以一起拖走
+      const moveTargets = objs.filter((o) => !o.locked);
+      state.interaction = moveTargets.length
+        ? { mode: "move", entry, objs: moveTargets, start: pt, origs: moveTargets.map(cloneObj), historyPushed: false }
+        : null;
     }
     redraw(entry);
     renderToolOptions();
@@ -2193,14 +2206,21 @@ function normalizeShape(obj) {
 function deleteSelected() {
   if (!state.selected) return;
   const { entry, objs } = state.selected;
+  const toDelete = objs.filter((o) => !o.locked);
+  const lockedCount = objs.length - toDelete.length;
+  if (!toDelete.length) {
+    toast("物件已鎖定，請先解鎖才能刪除", true);
+    return;
+  }
   pushHistory(entry);
-  objs.forEach((obj) => {
+  toDelete.forEach((obj) => {
     const idx = entry.objects.indexOf(obj);
     if (idx >= 0) entry.objects.splice(idx, 1);
   });
   setSelected(null);
   redraw(entry);
   renderToolOptions();
+  if (lockedCount) toast(`已鎖定的 ${lockedCount} 個物件未被刪除`);
 }
 
 /* ---------------- 文字內容編輯（新增文字 / 取代既有文字 / 雙擊再編輯共用） ---------------- */
@@ -2649,6 +2669,7 @@ function pasteClipboardObject() {
   const newObjs = clip.objs.map((o) => {
     const obj = JSON.parse(JSON.stringify(o, cleanReplacer));
     obj.id = newId();
+    obj.locked = false; // 貼上永遠是新的一份，不繼承來源物件的鎖定狀態
     if (rotationFix && typeof obj.rotation === "number") {
       obj.rotation = normalizeAngle(obj.rotation + rotationFix);
     }
@@ -2841,10 +2862,39 @@ function buildMultiObjectPanel(objs, entry) {
   info.style.cssText = "font-size:13px;color:#dbe2ea;";
   info.textContent = `已選取 ${objs.length} 個物件`;
   toolOptionsEl.appendChild(info);
+  const lockedCount = objs.filter((o) => o.locked).length;
+  if (lockedCount) {
+    const lockedHint = document.createElement("span");
+    lockedHint.style.cssText = "font-size:12px;color:#9fb0c3;";
+    lockedHint.textContent = `其中 ${lockedCount} 個已鎖定，不會被移動／縮放／刪除`;
+    toolOptionsEl.appendChild(lockedHint);
+  }
   const hint = document.createElement("span");
   hint.style.cssText = "font-size:12px;color:#9fb0c3;";
   hint.textContent = "拖曳其中一個可整批移動；拖右下角把手可整批縮放（按住 Ctrl 鎖定原本的長寬比例）";
   toolOptionsEl.appendChild(hint);
+
+  const lockBtn = document.createElement("button");
+  lockBtn.textContent = "🔒 鎖定所選";
+  lockBtn.title = "鎖定後這些物件就不能被移動／縮放／刪除，避免編輯時不小心動到";
+  lockBtn.addEventListener("click", () => {
+    pushHistory(entry);
+    objs.forEach((o) => (o.locked = true));
+    redraw(entry);
+    renderToolOptions();
+  });
+  toolOptionsEl.appendChild(lockBtn);
+
+  const unlockBtn = document.createElement("button");
+  unlockBtn.textContent = "🔓 解鎖所選";
+  unlockBtn.addEventListener("click", () => {
+    pushHistory(entry);
+    objs.forEach((o) => (o.locked = false));
+    redraw(entry);
+    renderToolOptions();
+  });
+  toolOptionsEl.appendChild(unlockBtn);
+
   addDeleteButton(toolOptionsEl);
 }
 
@@ -2988,6 +3038,17 @@ function buildCropOptionsPanel() {
 }
 
 function buildObjectPanel(obj, entry) {
+  addCheckbox(toolOptionsEl, "🔒 鎖定物件", !!obj.locked, (v) => {
+    withObjHistory(entry, () => (obj.locked = v));
+    renderToolOptions();
+  });
+  if (obj.locked) {
+    const hint = document.createElement("span");
+    hint.style.cssText = "font-size:12px;color:#9fb0c3;";
+    hint.textContent = "已鎖定：無法移動／縮放／旋轉／刪除／編輯，取消勾選即可恢復";
+    toolOptionsEl.appendChild(hint);
+    return;
+  }
   if (obj.type === "text") {
     addColorInput(toolOptionsEl, "顏色", obj.color, (v) => withObjHistory(entry, () => (obj.color = v)));
     addRangeInput(toolOptionsEl, "大小", Math.round(obj.fontSize), 8, 150, (v) => withObjHistory(entry, () => (obj.fontSize = v)));
