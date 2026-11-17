@@ -843,6 +843,30 @@ function updateZoomLabel() {
   $("#zoomLabel").textContent = Math.round(state.zoom * 100) + "%";
 }
 
+// 按住 Ctrl 滾滾輪可以縮放（觸控板兩指縮放手勢瀏覽器也會視為 ctrlKey+wheel，一併支援）。
+// 用 requestAnimationFrame 把同一個畫面更新週期內的多次 wheel 事件合併成一次縮放，
+// 避免連續滾動時每個事件都重新渲染全部頁面造成卡頓。
+let wheelZoomPending = 0;
+let wheelZoomScheduled = false;
+viewer.addEventListener(
+  "wheel",
+  (e) => {
+    if (!e.ctrlKey || !state.pages.length) return;
+    e.preventDefault();
+    wheelZoomPending += -e.deltaY * 0.002;
+    if (!wheelZoomScheduled) {
+      wheelZoomScheduled = true;
+      requestAnimationFrame(() => {
+        const delta = Math.max(-0.3, Math.min(0.3, wheelZoomPending));
+        wheelZoomPending = 0;
+        wheelZoomScheduled = false;
+        changeZoom(delta);
+      });
+    }
+  },
+  { passive: false }
+);
+
 /* ---------------- 瀏覽方式：連續捲動／單頁／雙頁並排 ---------------- */
 
 document.querySelectorAll(".view-btn").forEach((btn) => {
