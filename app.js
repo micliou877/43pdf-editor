@@ -164,28 +164,32 @@ async function appendFile(file, isFirst) {
   try {
     const buffer = await file.arrayBuffer();
     const pdfjsDoc = await pdfjsLib.getDocument({ data: buffer.slice(0) }).promise;
-    const sourceIndex = state.sources.length;
-    state.sources.push({ buffer, pdfjsDoc, libDoc: null, fileName: file.name });
+    const restored = await tryRestoreEditableBackup(pdfjsDoc, file.name, isFirst);
 
-    for (let i = 1; i <= pdfjsDoc.numPages; i++) {
-      const pdfjsPage = await pdfjsDoc.getPage(i);
-      const entry = {
-        sourceIndex,
-        pageIndexInSource: i - 1,
-        pdfjsPage,
-        baseRotation: pdfjsPage.rotate || 0,
-        userDelta: 0,
-        objects: [],
-        watermark: null,
-        history: [],
-      };
-      state.pages.push(entry);
-      await buildPageDOM(entry);
-      buildThumb(entry);
+    if (!restored) {
+      const sourceIndex = state.sources.length;
+      state.sources.push({ buffer, pdfjsDoc, libDoc: null, fileName: file.name });
+
+      for (let i = 1; i <= pdfjsDoc.numPages; i++) {
+        const pdfjsPage = await pdfjsDoc.getPage(i);
+        const entry = {
+          sourceIndex,
+          pageIndexInSource: i - 1,
+          pdfjsPage,
+          baseRotation: pdfjsPage.rotate || 0,
+          userDelta: 0,
+          objects: [],
+          watermark: null,
+          history: [],
+        };
+        state.pages.push(entry);
+        await buildPageDOM(entry);
+        buildThumb(entry);
+      }
     }
     setControlsEnabled(true);
     scheduleAutosave();
-    if (!isFirst) toast(`已合併「${file.name}」，共 ${pdfjsDoc.numPages} 頁`);
+    if (!isFirst && !restored) toast(`已合併「${file.name}」，共 ${pdfjsDoc.numPages} 頁`);
   } catch (err) {
     console.error(err);
     toast("讀取檔案失敗：" + err.message, true);
@@ -3219,6 +3223,21 @@ async function exportPages(pageEntries, fileName) {
         copied.drawImage(png, { x: 0, y: 0, width: w, height: h });
       }
     }
+    try {
+      const backup = await buildEditableBackup(pageEntries);
+      await outDoc.attach(new TextEncoder().encode(JSON.stringify(backup.manifest)), EDITABLE_DATA_NAME, {
+        mimeType: "application/json",
+        description: "43PDF 編輯器內部資料，用這個編輯器重新開啟時會用來還原成可編輯的物件；其他 PDF 軟體可以忽略，不影響正常開啟與列印。",
+      });
+      await outDoc.attach(backup.srcBytes, EDITABLE_SRC_NAME, {
+        mimeType: "application/pdf",
+        description: "43PDF 編輯器內部資料：未加註的原始頁面內容。",
+      });
+    } catch (err) {
+      // 附加失敗不影響檔案本身能不能正常開啟，只是下次用這個編輯器重開時物件不能再編輯而已
+      console.warn("附加可編輯備份資料失敗", err);
+    }
+
     const bytes = await outDoc.save();
     downloadBytes(bytes, fileName);
     toast("匯出完成，已開始下載");
@@ -3227,6 +3246,104 @@ async function exportPages(pageEntries, fileName) {
     toast("匯出失敗：" + err.message, true);
   } finally {
     hideLoading();
+  }
+}
+
+/* ---------------- 下載後用這個編輯器重新打開，物件仍然可以編輯 ---------------- */
+// 匯出時，除了一般看得到的內容（物件已經畫成圖蓋在頁面上，任何 PDF 軟體都看得到），
+// 額外用 PDF 的「嵌入檔案」偷偷多存一份「原始未加註頁面」＋「物件資料（位置／顏色／文字…）」。
+// 一般 PDF 閱讀器會忽略這兩個附件；只有這個編輯器自己重新開啟同一個檔案時，才會認出來，
+// 用那份乾淨的原始內容＋物件資料重建編輯狀態，而不是用匯出時蓋上去、已經印死的那張圖。
+const EDITABLE_DATA_NAME = "43pdf-editor-data.json";
+const EDITABLE_SRC_NAME = "43pdf-editor-original.pdf";
+
+async function buildEditableBackup(pageEntries) {
+  const srcDoc = await PDFDocument.create();
+  const pages = [];
+  for (const entry of pageEntries) {
+    if (isCropped(entry)) {
+      // 裁切／延伸過的頁面本來就沒有乾淨的向量內容可以保留，只好另外畫一張「沒有疊物件」
+      // 的乾淨版本當作這一頁的原始內容（跟匯出主流程的做法一樣，只是不疊 renderPageObjects）。
+      const totalRotation = (((entry.baseRotation + entry.userDelta) % 360) + 360) % 360;
+      const cw = entry.cropW, ch = entry.cropH;
+      const scale = EXPORT_SCALE * CSS_SCALE;
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(cw * EXPORT_SCALE));
+      c.height = Math.max(1, Math.round(ch * EXPORT_SCALE));
+      const ctx = c.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, c.width, c.height);
+      const viewport = entry.pdfjsPage.getViewport({
+        scale, rotation: 0,
+        offsetX: -entry.cropX * scale,
+        offsetY: -entry.cropY * scale,
+      });
+      await entry.pdfjsPage.render({ canvasContext: ctx, viewport }).promise;
+      const bytes = await dataUrlToBytes(c.toDataURL("image/png"));
+      const png = await srcDoc.embedPng(bytes);
+      srcDoc.addPage([cw, ch]).drawImage(png, { x: 0, y: 0, width: cw, height: ch });
+      pages.push({
+        objects: cleanObjects(entry.objects), watermark: entry.watermark,
+        baseRotation: 0, userDelta: totalRotation,
+        cropX: 0, cropY: 0, cropW: cw, cropH: ch,
+      });
+    } else {
+      const libDoc = await getLibDoc(entry.sourceIndex);
+      const [copied] = await srcDoc.copyPages(libDoc, [entry.pageIndexInSource]);
+      srcDoc.addPage(copied);
+      pages.push({
+        objects: cleanObjects(entry.objects), watermark: entry.watermark,
+        baseRotation: entry.baseRotation, userDelta: entry.userDelta,
+        cropX: entry.cropX, cropY: entry.cropY, cropW: entry.cropW, cropH: entry.cropH,
+      });
+    }
+  }
+  const srcBytes = await srcDoc.save();
+  const manifest = { app: "43pdf-editor", version: 1, pageNumberConfig: state.pageNumberConfig, pages };
+  return { manifest, srcBytes };
+}
+
+// 檢查剛讀進來的 PDF 裡有沒有藏著我們自己的備份資料，有的話就用它重建可編輯的頁面，
+// 回傳 true／false 表示有沒有成功還原（false 的話呼叫端要照一般方式把頁面加進去）。
+async function tryRestoreEditableBackup(pdfjsDoc, fileName, isFirst) {
+  let attachments;
+  try {
+    attachments = await pdfjsDoc.getAttachments();
+  } catch (err) {
+    return false;
+  }
+  if (!attachments) return false;
+  const list = Object.values(attachments);
+  const dataAtt = list.find((a) => a.filename === EDITABLE_DATA_NAME);
+  const srcAtt = list.find((a) => a.filename === EDITABLE_SRC_NAME);
+  if (!dataAtt || !srcAtt) return false;
+  try {
+    const manifest = JSON.parse(new TextDecoder().decode(dataAtt.content));
+    if (!manifest || manifest.app !== "43pdf-editor" || !Array.isArray(manifest.pages)) return false;
+    const pristineDoc = await pdfjsLib.getDocument({ data: srcAtt.content.slice() }).promise;
+    if (pristineDoc.numPages !== manifest.pages.length) return false; // 資料對不上，保守起見當作沒有備份
+
+    const sourceIndex = state.sources.length;
+    state.sources.push({ buffer: srcAtt.content.slice().buffer, pdfjsDoc: pristineDoc, libDoc: null, fileName });
+    for (let i = 0; i < manifest.pages.length; i++) {
+      const saved = manifest.pages[i];
+      const pdfjsPage = await pristineDoc.getPage(i + 1);
+      const entry = {
+        sourceIndex, pageIndexInSource: i, pdfjsPage,
+        baseRotation: saved.baseRotation || 0, userDelta: saved.userDelta || 0,
+        objects: saved.objects || [], watermark: saved.watermark || null, history: [],
+        cropX: saved.cropX, cropY: saved.cropY, cropW: saved.cropW, cropH: saved.cropH,
+      };
+      state.pages.push(entry);
+      await buildPageDOM(entry);
+      buildThumb(entry);
+    }
+    if (isFirst && manifest.pageNumberConfig) state.pageNumberConfig = manifest.pageNumberConfig;
+    toast("偵測到先前用這個編輯器加過的物件，已還原成可以繼續編輯");
+    return true;
+  } catch (err) {
+    console.warn("還原可編輯備份資料失敗，改用一般方式開啟", err);
+    return false;
   }
 }
 
