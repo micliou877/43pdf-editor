@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDF 閱讀編輯器</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#1f2630">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="toolbar">
+  <div class="brand">📄 PDF 閱讀編輯器</div>
+
+  <div class="group">
+    <button id="btnOpen" title="開啟一個新的 PDF（會取代目前內容）">開啟檔案</button>
+    <button id="btnAppend" title="加入另一份 PDF，接在目前頁面後面（合併）">加入合併</button>
+    <button id="btnDownload" class="primary" disabled>下載 PDF</button>
+  </div>
+
+  <div class="group tool-group" id="toolGroup">
+    <button class="tool-btn active" data-tool="pan" title="瀏覽／選取物件：點選可移動、拖角可縮放（圖片按住 Ctrl 可等比例縮放）、拖上方圓點可旋轉（按住 Ctrl 鎖定 90 度）、雙擊文字可改內容、Delete 鍵刪除。按住 Shift 點選可多選，或直接拖曳空白處框選多個物件；多選後可一起移動／縮放（按住 Ctrl 鎖定原本比例），也可以 Ctrl+C／Ctrl+V 複製貼上（貼到別頁會貼在同一個位置）">🖐 瀏覽</button>
+    <button class="tool-btn" data-tool="text" title="點一下頁面新增文字（加入後仍可再編輯／旋轉）">🔤 新增文字</button>
+    <button class="tool-btn" data-tool="highlight" title="像真的螢光筆一樣，拖曳塗畫標註；按住 Ctrl 可畫直線">🖍 螢光筆</button>
+    <button class="tool-btn" data-tool="pen" title="自由畫筆，可用來簽名；按住 Ctrl 可畫直線">✍️ 畫筆</button>
+    <button class="tool-btn" data-tool="shape" title="拖曳新增方形、橢圓、雲型線或索引符號（可在上方選擇種類，都可旋轉／填色）；按住 Ctrl 可畫正方形／正圓形；雙擊圖形可在中間打字">⬛ 圖形</button>
+    <button class="tool-btn" data-tool="stamp" title="先在上方選擇自己的印章圖片，再點頁面蓋章">🖼 蓋章</button>
+    <button class="tool-btn" data-tool="edittext" title="點選既有文字進行取代">✏️ 編輯文字</button>
+    <button class="tool-btn" data-tool="watermark" title="為所有頁面加上浮水印">💧 浮水印</button>
+    <button class="tool-btn" data-tool="crop" title="拖曳框選要保留的範圍（可超出頁面邊緣，用來增加頁面大小），放開後雙擊頁面才會真的套用裁切">✂ 裁切頁面</button>
+    <button class="tool-btn" data-tool="pagenum" title="為所有頁面加上頁碼">🔢 頁碼</button>
+  </div>
+
+  <div class="group" id="toolOptions"></div>
+
+  <div class="group">
+    <button id="btnUndo" title="復原目前頁面最後一個標註動作（Ctrl+Z）" disabled>↩ 復原</button>
+    <button id="btnZoomOut" disabled>－</button>
+    <span id="zoomLabel">100%</span>
+    <button id="btnZoomIn" disabled>＋</button>
+  </div>
+
+  <div class="group tool-group" id="viewGroup">
+    <button class="tool-btn view-btn active" data-view="scroll" title="連續捲動瀏覽全部頁面（原本的瀏覽方式）">📜 連續捲動</button>
+    <button class="tool-btn view-btn" data-view="single" title="一次只看一頁，滾動滑鼠滾輪切換上／下一頁">📄 單頁</button>
+    <button class="tool-btn view-btn" data-view="spread" title="像書本一樣，兩頁並排顯示，滾動滑鼠滾輪換下一組">📖 雙頁並排</button>
+  </div>
+
+  <div class="group" id="pageNav" hidden>
+    <button id="btnPrevPage" title="上一頁">◀</button>
+    <span id="pageIndicator">1 / 1</span>
+    <button id="btnNextPage" title="下一頁">▶</button>
+  </div>
+</header>
+
+<div class="main">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <span>頁面縮圖</span>
+      <div class="sidebar-actions">
+        <button id="btnExtract" disabled>取出所選</button>
+        <button id="btnDeleteSelected" disabled>刪除所選</button>
+      </div>
+    </div>
+    <div class="thumb-list" id="thumbList"></div>
+  </aside>
+
+  <section class="viewer" id="viewer">
+    <div id="emptyState">
+      <p>尚未開啟任何 PDF 檔案</p>
+      <p class="hint">點上方「開啟檔案」或把 PDF 拖放到這裡</p>
+      <p class="hint small">所有處理都在您的瀏覽器裡完成，檔案不會上傳到任何伺服器。</p>
+    </div>
+    <div class="viewer-scroll" id="viewerScroll"></div>
+  </section>
+</div>
+
+<input type="file" id="fileInputOpen" accept="application/pdf" hidden>
+<input type="file" id="fileInputAppend" accept="application/pdf" multiple hidden>
+
+<div class="modal-backdrop" id="watermarkModal" hidden>
+  <div class="modal">
+    <h3>加入浮水印</h3>
+    <label>浮水印圖片（選填，指定後優先於文字）
+      <input type="file" id="wmImageInput" accept="image/*">
+    </label>
+    <div id="wmImagePreviewWrap" class="wm-image-preview" hidden>
+      <img id="wmImagePreview" alt="浮水印圖片預覽">
+      <button type="button" id="wmImageClear">清除圖片，改用文字</button>
+    </div>
+    <label id="wmTextLabel">文字內容
+      <input type="text" id="wmText" value="機密 CONFIDENTIAL" maxlength="40">
+    </label>
+    <label><span id="wmSizeLabel">字型大小</span>
+      <input type="range" id="wmSize" min="12" max="160" value="60">
+    </label>
+    <label>透明度
+      <input type="range" id="wmOpacity" min="5" max="100" value="25">
+    </label>
+    <label>旋轉角度
+      <input type="range" id="wmRotate" min="0" max="90" value="45">
+    </label>
+    <label id="wmColorLabel">顏色
+      <input type="color" id="wmColor" value="#ff0000">
+    </label>
+    <label class="checkbox"><input type="checkbox" id="wmTile" checked> 整頁重複鋪滿</label>
+    <div class="modal-actions">
+      <button id="wmCancel">取消</button>
+      <button id="wmApply" class="primary">套用到所有頁面</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="pageNumberModal" hidden>
+  <div class="modal">
+    <h3>加入頁碼</h3>
+    <label>格式（{n} 目前頁碼、{total} 總頁數）
+      <input type="text" id="pnFormat" value="{n}" maxlength="30">
+    </label>
+    <label>起始頁碼
+      <input type="number" id="pnStart" value="1" step="1">
+    </label>
+    <label class="checkbox"><input type="checkbox" id="pnSkipFirst"> 第一頁不編號（例如封面）</label>
+    <label>位置
+      <select id="pnPosition">
+        <option value="bottom-center" selected>下方置中</option>
+        <option value="bottom-right">右下角</option>
+        <option value="bottom-left">左下角</option>
+        <option value="top-center">上方置中</option>
+        <option value="top-right">右上角</option>
+        <option value="top-left">左上角</option>
+      </select>
+    </label>
+    <label>字型大小
+      <input type="range" id="pnSize" min="8" max="40" value="12">
+    </label>
+    <label>顏色
+      <input type="color" id="pnColor" value="#000000">
+    </label>
+    <label class="checkbox"><input type="checkbox" id="pnBgEnabled"> 底色襯托</label>
+    <label id="pnBgColorLabel">底色顏色
+      <input type="color" id="pnBgColor" value="#ffeb3b">
+    </label>
+    <div class="modal-actions">
+      <button id="pnClear">清除頁碼</button>
+      <button id="pnCancel">取消</button>
+      <button id="pnApply" class="primary">套用到所有頁面</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<div class="loading-overlay" id="loadingOverlay" hidden><div class="spinner"></div><div id="loadingText">處理中…</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
