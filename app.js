@@ -1654,7 +1654,9 @@ function attachPageInteractions(entry) {
       pushHistory(entry);
       const d = state.defaults.text;
       const obj = {
-        id: newId(), type: "text", x: pt.x, y: pt.y, text: "", rotation: 0,
+        // 頁面本身可能有旋轉（例如橫式圖紙存成直式顯示），新增的文字預設要讓畫面上看起來是正的
+        // （橫式書寫），不要讓它一開始就跟著頁面的旋轉歪掉，所以旋轉角度要抵銷頁面本身的旋轉。
+        id: newId(), type: "text", x: pt.x, y: pt.y, text: "", rotation: normalizeAngle(-getPageRotation(entry)),
         color: d.color, fontSize: d.fontSize,
         bg: { enabled: d.bg.enabled, color: d.bg.color },
         border: { enabled: d.border.enabled, color: d.border.color, width: d.border.width },
@@ -1671,7 +1673,7 @@ function attachPageInteractions(entry) {
       const aspect = d.naturalW ? d.naturalH / d.naturalW : 1;
       const w = d.targetW, h = w * aspect;
       pushHistory(entry);
-      const obj = { id: newId(), type: "image", x: pt.x - w / 2, y: pt.y - h / 2, w, h, rotation: 0, dataUrl: d.dataUrl };
+      const obj = { id: newId(), type: "image", x: pt.x - w / 2, y: pt.y - h / 2, w, h, rotation: normalizeAngle(-getPageRotation(entry)), dataUrl: d.dataUrl };
       entry.objects.push(obj);
       redraw(entry);
       toast("已蓋章");
@@ -1720,7 +1722,8 @@ function attachPageInteractions(entry) {
     const h = spanRect.height * toPoint;
     pushHistory(entry);
     const obj = {
-      id: newId(), type: "text", x, y: y + h * 0.08, text: span.textContent, rotation: 0,
+      id: newId(), type: "text", x, y: y + h * 0.08, text: span.textContent,
+      rotation: normalizeAngle(-getPageRotation(entry)),
       color: "#000000", fontSize: Math.max(6, h * 0.78),
       bg: { enabled: true, color: "#ffffff" },
       border: { enabled: false, color: "#000000", width: 2 },
@@ -2655,7 +2658,7 @@ window.addEventListener("paste", async (e) => {
     const w = dims.w * ratio, h = dims.h * ratio;
     const x = entry.cropX + (pageW - w) / 2, y = entry.cropY + (pageH - h) / 2;
     pushHistory(entry);
-    const obj = { id: newId(), type: "image", x, y, w, h, rotation: 0, dataUrl };
+    const obj = { id: newId(), type: "image", x, y, w, h, rotation: normalizeAngle(-getPageRotation(entry)), dataUrl };
     entry.objects.push(obj);
     setTool("pan");
     setSelected({ entry, objs: [obj] });
