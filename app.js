@@ -10,14 +10,20 @@ const { PDFDocument, degrees } = PDFLib;
 
 const CSS_SCALE = 1.0;      // 100% 縮放時，1 PDF point = 1 CSS px
 const BACKING_DPR = 1.5;    // 畫面用的實際像素密度（清晰度）
-// 頁面左右兩側多留一塊「暫放區」，可以把物件拖出頁面範圍外暫時擺放（例如表格內容被頁面
+// 頁面四周多留一圈「暫放區」，可以把物件拖出頁面範圍外暫時擺放（例如表格內容被頁面
 // 邊緣裁掉時，先把備註文字放在旁邊）；這塊區域只存在於畫面上，匯出 PDF 時不會印出來。
-// 這個數值不能無限加大：頁面是用 flex 置中，暫放區是疊加在頁面兩側的 overlay-canvas，
-// 只有「往右」超出視窗的部分會被瀏覽器算進可捲動範圍、捲過去就看得到；「往左」超出視窗的
-// 部分，瀏覽器天生無法捲動到負值座標去看，捲到底（scrollLeft=0）就是極限，再寬也看不到、
-// 點不到，等於白白浪費、還會讓使用者以為「選取/拖曳往左過不去」。所以margin只抓一個在
-// 大多數視窗寬度下，不用捲動、兩側都能完整看到的寬度（太寬在小視窗一樣會卡到這個限制）。
+// 這個數值不能無限加大：每頁外面包了一層 page-row，寬高故意算進暫放區的寬度／高度
+// （見 layoutPage()），這樣瀏覽器才會把暫放區算進可捲動範圍；如果暫放區只是疊加在頁面
+// 上的 overlay-canvas 視覺溢出、不算進任何元素真正的 box 大小，瀏覽器置中時「開頭側」
+// （往左／往上）超出視窗的部分天生無法捲過去看，捲到底（scrollLeft/scrollTop=0）就是
+// 極限，等於白白浪費、還會讓使用者以為「選取/拖曳往左或往上過不去」。所以 margin 只抓一個
+// 在大多數視窗大小下，不用捲動就能完整看到的寬度（太寬在小視窗一樣會卡到這個限制）。
 const PASTEBOARD_MARGIN = 500;
+// 雙頁並排模式下，頁面本來就左右緊鄰著排，暫放區會把兩頁硬是撐開一大截，所以並排時不保留暫放區寬度
+// （右側多留的視覺暫放效果還是在，只是並排時這塊不算進版面寬度，跟現在的行為一致）。
+function pasteboardMarginPx() {
+  return state.viewMode === "spread" ? 0 : Math.round(PASTEBOARD_MARGIN * state.zoom * CSS_SCALE);
+}
 const TEXT_PAD = 4;         // 文字物件背景／外框的內距（point）
 const ROTATE_HANDLE_DIST = 26; // 旋轉把手離物件上緣的距離（point）
 
@@ -44,7 +50,7 @@ const state = {
     highlight: { color: "#ffeb3b", width: 18 },
     pen: { color: "#1d4ed8", width: 3 },
     shape: { kind: "rect", stroke: "#1d4ed8", strokeWidth: 3, fill: { enabled: false, color: "#60a5fa", opacity: 1 }, textColor: "#000000", fontSize: 16 },
-    stamp: { dataUrl: null, fileName: null, naturalW: 0, naturalH: 0, targetW: 120 },
+    stamp: { dataUrl: null, fileName: null, naturalW: 0, naturalH: 0, targetW: 120, border: { enabled: false, color: "#000000", width: 2 } },
     indexmark: { stroke: "#e21818", strokeWidth: 2, fill: { enabled: false, color: "#e21818", opacity: 1 }, textColor: "#000000", fontSize: 28 },
   },
 };
@@ -106,15 +112,52 @@ $("#fileInputAppend").addEventListener("change", async (e) => {
 );
 viewerScroll.addEventListener("drop", async (e) => {
   e.preventDefault();
-  const files = Array.from(e.dataTransfer.files || []).filter((f) => f.type === "application/pdf");
-  if (!files.length) return;
-  if (state.pages.length === 0) {
-    await resetAndLoad(files[0]);
-    for (const f of files.slice(1)) await appendFile(f);
-  } else {
-    for (const f of files) await appendFile(f);
+  const allFiles = Array.from(e.dataTransfer.files || []);
+  const pdfFiles = allFiles.filter((f) => f.type === "application/pdf");
+  const imageFiles = allFiles.filter((f) => f.type.startsWith("image/"));
+  if (pdfFiles.length) {
+    if (state.pages.length === 0) {
+      await resetAndLoad(pdfFiles[0]);
+      for (const f of pdfFiles.slice(1)) await appendFile(f);
+    } else {
+      for (const f of pdfFiles) await appendFile(f);
+    }
   }
+  if (imageFiles.length) await dropImagesOntoPage(imageFiles, e);
 });
+
+// 把拖曳進來的照片檔案直接插入成頁面上的圖片物件（不用再先存檔、再用印章工具一張一張選）。
+// 目標頁面／座標看滑鼠放開時真正在哪個 .page-outer 底下，找不到（例如放在頁與頁之間的間隔）
+// 才退回用 pickActivePage() 猜目前在看哪一頁。
+async function dropImagesOntoPage(imageFiles, e) {
+  if (!state.pages.length) {
+    toast("請先開啟 PDF，才能把照片拖曳進頁面裡", true);
+    return;
+  }
+  const outerEl = e.target && e.target.closest && e.target.closest(".page-outer");
+  const entry = (outerEl && state.pages.find((p) => p.outerEl === outerEl)) || pickActivePage();
+  if (!entry) return;
+  const pt = eventToPoint(entry, e);
+  pushHistory(entry);
+  let lastObj = null;
+  let offset = 0; // 一次拖進多張照片時，每張稍微錯開位置，避免整疊疊在同一個點看不出張數
+  for (const file of imageFiles) {
+    try {
+      lastObj = await insertImageObjectAt(entry, file, { x: pt.x + offset, y: pt.y + offset });
+      offset += 20;
+    } catch (err) {
+      console.error(err);
+      toast("插入照片失敗：" + err.message, true);
+    }
+  }
+  if (lastObj) {
+    setTool("pan");
+    setSelected({ entry, objs: [lastObj] });
+    redraw(entry);
+    renderToolOptions();
+    toast(imageFiles.length > 1 ? `已插入 ${imageFiles.length} 張照片` : "已插入照片");
+  }
+}
 
 async function resetAndLoad(file) {
   showLoading("讀取 PDF 中…");
@@ -244,6 +287,9 @@ function nativeViewport(entry, zoom) {
 
 async function buildPageDOM(entry) {
   ensureCropDefaults(entry);
+  const row = document.createElement("div");
+  row.className = "page-row";
+
   const outer = document.createElement("div");
   outer.className = "page-outer";
 
@@ -271,8 +317,10 @@ async function buildPageDOM(entry) {
   sizeTip.hidden = true;
   outer.appendChild(sizeTip);
 
-  viewerScroll.appendChild(outer);
+  row.appendChild(outer);
+  viewerScroll.appendChild(row);
 
+  entry.rowEl = row;
   entry.outerEl = outer;
   entry.innerEl = inner;
   entry.baseCanvasEl = baseCanvas;
@@ -303,17 +351,19 @@ async function renderPage(entry, zoom) {
   ctx.setTransform(BACKING_DPR, 0, 0, BACKING_DPR, 0, 0);
   await entry.pdfjsPage.render({ canvasContext: ctx, viewport }).promise;
 
-  // overlay-canvas 比頁面本身左右各多留一塊暫放區的寬度，用來放暫時拖出頁面外的物件；
-  // 上下不留（避免跟上下相鄰頁面的間距重疊），畫面上看起來就是頁面左右兩側多了一截空白。
+  // overlay-canvas 比頁面本身上下左右各多留一塊暫放區，用來放暫時拖出頁面外的物件，
+  // 畫面上看起來就是頁面四周多了一截空白。
   const marginPx = Math.round(PASTEBOARD_MARGIN * zoom * CSS_SCALE);
+  // （注意：這裡故意不呼叫 pasteboardMarginPx()，overlay-canvas 本身的暫放區寬高不受並排模式影響，
+  // 只有 page-row 版面保留的寬高在並排模式下會變成 0，見 layoutPage()）
   const overlay = entry.overlayCanvasEl;
-  const ow = w + marginPx * 2, oh = h;
+  const ow = w + marginPx * 2, oh = h + marginPx * 2;
   overlay.width = Math.round(ow * BACKING_DPR);
   overlay.height = Math.round(oh * BACKING_DPR);
   overlay.style.width = ow + "px";
   overlay.style.height = oh + "px";
   overlay.style.left = -marginPx + "px";
-  overlay.style.top = "0px";
+  overlay.style.top = -marginPx + "px";
 
   entry.innerEl.style.width = w + "px";
   entry.innerEl.style.height = h + "px";
@@ -349,14 +399,36 @@ function layoutPage(entry) {
   const h = entry.innerEl.style.height;
   const wPx = parseFloat(w), hPx = parseFloat(h);
   entry.innerEl.style.transform = `translate(-50%,-50%) rotate(${total}deg)`;
-  if (total === 90 || total === 270) {
-    entry.outerEl.style.width = hPx + "px";
-    entry.outerEl.style.height = wPx + "px";
-  } else {
-    entry.outerEl.style.width = wPx + "px";
-    entry.outerEl.style.height = hPx + "px";
-  }
+  const rotated = total === 90 || total === 270;
+  const outerW = rotated ? hPx : wPx;
+  const outerH = rotated ? wPx : hPx;
+  entry.outerEl.style.width = outerW + "px";
+  entry.outerEl.style.height = outerH + "px";
+  // 暫放區疊在 inner 本身（未旋轉座標系）的四周、四邊距離相等，頁面整塊旋轉 90°/270° 後
+  // 這圈距離還是四邊相等，所以 page-row 保留的暫放區空間不用管旋轉角度，寬高都一律多留
+  // 同一個 marginPx 即可。
+  const marginPx = pasteboardMarginPx();
+  entry.rowEl.style.width = (outerW + marginPx * 2) + "px";
+  entry.rowEl.style.height = (outerH + marginPx * 2) + "px";
   entry.textLayerEl.classList.toggle("edit-mode", state.tool === "edittext");
+}
+
+// page-row 保留了左右暫放區的寬度，通常會比視窗寬，預設捲動位置要主動置中，
+// 不然畫面一開始會卡在最左邊的暫放區，看不到頁面本身。只在「這是文件剛開啟後的第一頁」
+// 時做，避免編輯中途（插入/刪除/搬移頁面）無預警地把使用者原本的水平捲動位置扯回正中間。
+function centerViewerHorizontally() {
+  const max = viewerScroll.scrollWidth - viewerScroll.clientWidth;
+  if (max > 0) viewerScroll.scrollLeft = max / 2;
+}
+
+// 上下暫放區不像左右那樣有「捲不到」的瀏覽器限制（viewerScroll 直向是一般文件流，
+// 預設 scrollTop=0 就看得到），但文件剛開啟時如果不處理，第一頁上方會先看到一截
+// 空白暫放區才看到頁面本身，體感不好，所以一樣只在「文件剛開啟的第一頁」時主動置中一次。
+// 跟 centerViewerHorizontally() 不同，這個絕對不能在縮放／切換瀏覽模式時也呼叫——那些時機
+// 文件通常不只一頁，直向置中會把使用者捲動到的頁面硬是拉到全文件正中間，不是只重算暫放區。
+function centerViewerVertically() {
+  const max = viewerScroll.scrollHeight - viewerScroll.clientHeight;
+  if (max > 0) viewerScroll.scrollTop = max / 2;
 }
 
 function renumber() {
@@ -364,6 +436,10 @@ function renumber() {
     entry.labelEl.textContent = "第 " + (idx + 1) + " 頁";
     if (entry.thumbNumEl) entry.thumbNumEl.textContent = idx + 1;
   });
+  if (state.pages.length === 1) {
+    centerViewerHorizontally();
+    centerViewerVertically();
+  }
   // 頁碼是依照頁面「目前的順序」即時算出來的，順序一變就要重畫全部頁面讓頁碼同步更新
   if (state.pageNumberConfig) state.pages.forEach((entry) => redraw(entry));
   applyViewMode();
@@ -547,7 +623,7 @@ function reflowDomOrder() {
   thumbList.innerHTML = "";
   state.pages.forEach((p) => thumbList.appendChild(p.thumbItemEl));
   viewerScroll.innerHTML = "";
-  state.pages.forEach((p) => viewerScroll.appendChild(p.outerEl));
+  state.pages.forEach((p) => viewerScroll.appendChild(p.rowEl));
 }
 
 /* 插入一組已建好 DOM 的頁面到指定位置（複製頁面／插入空白頁／拖曳檔案插入都共用） */
@@ -651,7 +727,7 @@ async function deleteSinglePage(entry) {
     setSelected(null);
     renderToolOptions();
   }
-  entry.outerEl.remove();
+  entry.rowEl.remove();
   entry.thumbItemEl.remove();
   state.pages.splice(state.pages.indexOf(entry), 1);
   renumber();
@@ -805,7 +881,7 @@ $("#btnDeleteSelected").addEventListener("click", async () => {
     renderToolOptions();
   }
   toDelete.forEach((entry) => {
-    entry.outerEl.remove();
+    entry.rowEl.remove();
     entry.thumbItemEl.remove();
     state.pages.splice(state.pages.indexOf(entry), 1);
   });
@@ -852,8 +928,8 @@ $("#btnExtract").addEventListener("click", async () => {
 $("#btnZoomIn").addEventListener("click", () => changeZoom(0.15));
 $("#btnZoomOut").addEventListener("click", () => changeZoom(-0.15));
 
-async function changeZoom(delta) {
-  const next = Math.min(3, Math.max(0.3, Math.round((state.zoom + delta) * 100) / 100));
+async function setZoom(next) {
+  next = Math.min(3, Math.max(0.3, Math.round(next * 100) / 100));
   if (next === state.zoom) return;
   state.zoom = next;
   updateZoomLabel();
@@ -863,12 +939,45 @@ async function changeZoom(delta) {
       await renderPage(entry, state.zoom);
       layoutPage(entry);
     }
+    centerViewerHorizontally();
+    // 單頁模式下畫面永遠只會有「目前這一頁」一個 row，跟一般連續捲動模式不同，不會有
+    // 「使用者原本捲到文件中間，結果被縮放硬拉回正中間」的問題，所以可以放心直向也置中。
+    if (state.viewMode === "single") centerViewerVertically();
   } finally {
     hideLoading();
   }
 }
+async function changeZoom(delta) {
+  await setZoom(state.zoom + delta);
+}
 function updateZoomLabel() {
   $("#zoomLabel").textContent = Math.round(state.zoom * 100) + "%";
+}
+
+// 可視範圍扣掉 viewer-scroll 的 padding 之後，實際可以放頁面內容的寬高。
+function viewerAvailableSize() {
+  const cs = getComputedStyle(viewerScroll);
+  const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  return { w: viewer.clientWidth - padX, h: viewer.clientHeight - padY };
+}
+
+// 算出讓這一頁（不含暫放區，暫放區本來就預期要捲動才看得到）完整顯示在目前可視範圍內的縮放比例。
+function computeFitZoom(entry) {
+  const total = (entry.baseRotation + entry.userDelta + 360) % 360;
+  const rotated = total === 90 || total === 270;
+  const nativeW = (rotated ? entry.cropH : entry.cropW) * CSS_SCALE;
+  const nativeH = (rotated ? entry.cropW : entry.cropH) * CSS_SCALE;
+  const avail = viewerAvailableSize();
+  const fit = Math.min(avail.w / nativeW, avail.h / nativeH);
+  return Math.min(3, Math.max(0.3, Math.round(fit * 100) / 100));
+}
+
+// 切到單頁模式時，把「目前這一頁」縮放到整頁完整顯示在畫面上，不用使用者自己手動調縮放。
+async function fitCurrentPageToViewer() {
+  const entry = state.pages[state.currentPageIndex];
+  if (!entry) return;
+  await setZoom(computeFitZoom(entry));
 }
 
 // 按住 Ctrl 滾滾輪可以縮放（觸控板兩指縮放手勢瀏覽器也會視為 ctrlKey+wheel，一併支援）。
@@ -895,6 +1004,26 @@ viewer.addEventListener(
   { passive: false }
 );
 
+// 避免 Ctrl+滾輪／觸控板兩指縮放把「整個網頁」放大，而不是只放大 PDF 頁面：上面那個
+// wheel 監聽器只掛在 #viewer 上，滾到工具列、側邊欄那些區域時不會被攔到，所以這裡再掛一個
+// 全域的，只負責擋掉瀏覽器原生縮放，不處理縮放邏輯（邏輯交給上面 #viewer 那個監聽器）。
+document.addEventListener(
+  "wheel",
+  (e) => {
+    if (e.ctrlKey) e.preventDefault();
+  },
+  { passive: false }
+);
+// Safari／iPad 的雙指 pinch 縮放手勢不會觸發 wheel 事件，是另一套 gesture 事件，要分開擋。
+["gesturestart", "gesturechange", "gestureend"].forEach((type) => {
+  document.addEventListener(type, (e) => e.preventDefault());
+});
+// Ctrl + "+"/"-"/"="/"0" 這幾個瀏覽器縮放鍵盤快捷鍵也一併擋掉；但部分瀏覽器（尤其 Chrome）
+// 把這幾個鍵當成保留的瀏覽器層級快捷鍵，網頁 JS 無法真的攔截，只能在允許攔截的瀏覽器上生效。
+document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && ["+", "-", "=", "0"].includes(e.key)) e.preventDefault();
+});
+
 /* ---------------- 瀏覽方式：連續捲動／單頁／雙頁並排 ---------------- */
 
 document.querySelectorAll(".view-btn").forEach((btn) => {
@@ -908,6 +1037,8 @@ function setViewMode(mode) {
   document.querySelectorAll(".view-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === mode));
   $("#pageNav").hidden = mode === "scroll";
   applyViewMode();
+  // 按下「單頁顯示」時，把目前這一頁縮放到整頁完整顯示在畫面上，不用使用者自己手動調縮放。
+  if (mode === "single") fitCurrentPageToViewer();
 }
 
 function applyViewMode() {
@@ -916,16 +1047,23 @@ function applyViewMode() {
   }
   if (state.viewMode === "scroll") {
     viewerScroll.style.flexDirection = "column";
-    state.pages.forEach((p) => (p.outerEl.style.display = ""));
+    state.pages.forEach((p) => (p.rowEl.style.display = ""));
   } else if (state.viewMode === "single") {
     viewerScroll.style.flexDirection = "column";
-    state.pages.forEach((p, i) => (p.outerEl.style.display = i === state.currentPageIndex ? "" : "none"));
+    state.pages.forEach((p, i) => (p.rowEl.style.display = i === state.currentPageIndex ? "" : "none"));
   } else if (state.viewMode === "spread") {
     viewerScroll.style.flexDirection = "row";
     state.pages.forEach((p, i) => {
-      p.outerEl.style.display = i === state.currentPageIndex || i === state.currentPageIndex + 1 ? "" : "none";
+      p.rowEl.style.display = i === state.currentPageIndex || i === state.currentPageIndex + 1 ? "" : "none";
     });
   }
+  // 並排模式下 page-row 不保留暫放區寬度（見 pasteboardMarginPx），切換模式時要重算，
+  // 不然寬度會停留在切換前的狀態
+  state.pages.forEach((p) => layoutPage(p));
+  centerViewerHorizontally();
+  // 單頁模式下畫面永遠只有「目前這一頁」一個 row，不是連續捲動模式那種使用者自己捲到
+  // 文件中間的情況，直向置中不會打斷使用者原本的捲動位置，可以放心每次都重算。
+  if (state.viewMode === "single") centerViewerVertically();
   updateViewNav();
 }
 
@@ -1021,12 +1159,12 @@ function renderPageObjects(entry, ctx, scale, opts) {
   opts = opts || {};
   if (!opts.noClear) ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   // 暫放區只在畫面上的 overlay canvas 才有（opts.pasteboard），匯出時完全不套用，
-  // 暫放區裡的物件不會被印出來。畫布可能比頁面本身還寬（左右留了暫放區），
+  // 暫放區裡的物件不會被印出來。畫布可能比頁面本身還大（四周留了暫放區），
   // 所以頁面本身的實際像素寬高要另外算，不能直接拿 ctx.canvas.width/height 當頁面大小。
-  const marginX = opts.pasteboard ? PASTEBOARD_MARGIN : 0;
+  const marginPx = opts.pasteboard ? PASTEBOARD_MARGIN : 0;
   const pageW = (entry.cropW || 0) * scale, pageH = (entry.cropH || 0) * scale;
   ctx.save();
-  ctx.translate((marginX - (entry.cropX || 0)) * scale, -(entry.cropY || 0) * scale);
+  ctx.translate((marginPx - (entry.cropX || 0)) * scale, (marginPx - (entry.cropY || 0)) * scale);
   if (entry.watermark) drawWatermarkObj(ctx, entry.watermark, scale, pageW, pageH, entry);
 
   const drawOne = (obj) => {
@@ -1067,10 +1205,10 @@ function renderPageObjects(entry, ctx, scale, opts) {
   }
   ctx.restore();
   // 頁碼畫在裁切位移之外（不受裁切影響，永遠貼齊目前看得到的頁面邊緣），但還是要跟著
-  // 暫放區的位移平移，頁碼才會貼在「頁面」真正的邊緣，不會因為左右多留的暫放區而跑位。
+  // 暫放區的位移平移，頁碼才會貼在「頁面」真正的邊緣，不會因為四周多留的暫放區而跑位。
   if (state.pageNumberConfig) {
     ctx.save();
-    ctx.translate(marginX * scale, 0);
+    ctx.translate(marginPx * scale, marginPx * scale);
     drawPageNumberObj(ctx, state.pageNumberConfig, scale, pageW, pageH, entry);
     ctx.restore();
   }
@@ -1139,8 +1277,16 @@ function drawHighlightRun(ctx, run, scale) {
   hCanvas.width = ctx.canvas.width;
   hCanvas.height = ctx.canvas.height;
   const hctx = hCanvas.getContext("2d");
+  // hctx 是全新的離屏 canvas，預設是單位矩陣（沒有 ctx 目前的暫放區／裁切位移）。螢光筆拖進
+  // 左邊或上面的暫放區時，物件的頁面座標會是負值，沒有這段位移的話畫出來的點會落在 hCanvas
+  // 畫布範圍外（canvas 本身會直接裁掉畫布外的內容，不是之後才裁），整條筆跡就會憑空消失。
+  // 用 ctx.getTransform() 把目前的位移複製過去，螢光筆才會跟其他物件一樣可以畫到暫放區。
+  hctx.setTransform(ctx.getTransform());
   run.forEach((obj) => drawStrokeObject(hctx, obj, scale, 1));
   ctx.save();
+  // hCanvas 裡的內容已經用上面複製的位移畫成「絕對位置」了，合成回 ctx 時要用單位矩陣，
+  // 不然 ctx 身上還在生效的同一份位移會被疊加兩次，畫面會跑位。
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = HIGHLIGHT_OPACITY;
   ctx.drawImage(hCanvas, 0, 0);
   ctx.restore();
@@ -1205,6 +1351,13 @@ function drawImageObject(ctx, obj, scale, entry) {
   }
   if (!obj._img.complete || !obj._img.naturalWidth) return;
   ctx.drawImage(obj._img, obj.x * scale, obj.y * scale, obj.w * scale, obj.h * scale);
+  if (obj.border && obj.border.enabled) {
+    ctx.save();
+    ctx.strokeStyle = obj.border.color;
+    ctx.lineWidth = Math.max(1, obj.border.width * scale);
+    ctx.strokeRect(obj.x * scale, obj.y * scale, obj.w * scale, obj.h * scale);
+    ctx.restore();
+  }
 }
 
 function drawStrokeObject(ctx, obj, scale, opacity) {
@@ -1571,12 +1724,12 @@ function drawRotateHandleGlyph(ctx, cx, topY, rotY) {
   ctx.stroke();
 }
 
-// 框選多個物件時的預覽框：直接畫在 overlay canvas 上，框選範圍可以延伸到頁面兩側的暫放區
+// 框選多個物件時的預覽框：直接畫在 overlay canvas 上，框選範圍可以延伸到頁面四周的暫放區
 function drawMarqueePreview(entry, start, current) {
   const ctx = entry.overlayCanvasEl.getContext("2d");
   const scale = BACKING_DPR * state.zoom;
   const x0 = Math.min(start.x, current.x) - entry.cropX + PASTEBOARD_MARGIN;
-  const y0 = Math.min(start.y, current.y) - entry.cropY;
+  const y0 = Math.min(start.y, current.y) - entry.cropY + PASTEBOARD_MARGIN;
   const w = Math.abs(current.x - start.x);
   const h = Math.abs(current.y - start.y);
   ctx.save();
@@ -1729,8 +1882,8 @@ function eventToPoint(entry, e) {
   const xy = eventToCanvasXY(entry, e);
   const s = BACKING_DPR * state.zoom;
   // 換算回「原始（未裁切）頁面」座標系，物件的 x/y 才會跟裁切範圍無關、永遠對齊內容本身；
-  // overlay-canvas 左邊比頁面多留了一截暫放區（見 PASTEBOARD_MARGIN），要先扣掉才會對齊
-  return { x: xy.x / s + entry.cropX - PASTEBOARD_MARGIN, y: xy.y / s + entry.cropY };
+  // overlay-canvas 四周比頁面多留了一截暫放區（見 PASTEBOARD_MARGIN），要先扣掉才會對齊
+  return { x: xy.x / s + entry.cropX - PASTEBOARD_MARGIN, y: xy.y / s + entry.cropY - PASTEBOARD_MARGIN };
 }
 
 /* ---------------- 標註互動：建立 / 選取 / 移動 / 縮放 ---------------- */
@@ -1801,7 +1954,11 @@ function attachPageInteractions(entry) {
       const aspect = d.naturalW ? d.naturalH / d.naturalW : 1;
       const w = d.targetW, h = w * aspect;
       pushHistory(entry);
-      const obj = { id: newId(), type: "image", x: pt.x - w / 2, y: pt.y - h / 2, w, h, rotation: normalizeAngle(-getPageRotation(entry)), dataUrl: d.dataUrl };
+      const obj = {
+        id: newId(), type: "image", x: pt.x - w / 2, y: pt.y - h / 2, w, h,
+        rotation: normalizeAngle(-getPageRotation(entry)), dataUrl: d.dataUrl,
+        border: { enabled: d.border.enabled, color: d.border.color, width: d.border.width },
+      };
       entry.objects.push(obj);
       redraw(entry);
       toast("已蓋章");
@@ -2118,17 +2275,116 @@ async function applyCrop(entry, x, y, w, h) {
   toast("已裁切頁面，雙擊頁面即可套用");
 }
 
+const OBJECT_SNAP_DIST = 8; // 拖曳物件時靠近其他物件的邊緣／中心會自動吸附（CSS px，會依縮放換算）
+
+// 拖曳物件（群）時，看目前這個 dx/dy 會不會讓外框的邊緣／中心跟「同頁其他沒被選取的物件」的
+// 邊緣／中心對齊，如果在容許誤差內就把 dx/dy 微調成剛好對齊，並回傳要畫的輔助線。
+// axisLockX/axisLockY：對應的軸已經被 Ctrl 單向移動鎖定在 0，不能再被吸附改動。
+function computeMoveSnap(it, dx, dy, axisLockX, axisLockY) {
+  const tol = OBJECT_SNAP_DIST / state.zoom;
+  const boxes = it.objs.map((obj, i) => {
+    const b = getBBox(it.origs[i]);
+    return { x: b.x + dx, y: b.y + dy, w: b.w, h: b.h };
+  });
+  const gx0 = Math.min(...boxes.map((b) => b.x));
+  const gy0 = Math.min(...boxes.map((b) => b.y));
+  const gx1 = Math.max(...boxes.map((b) => b.x + b.w));
+  const gy1 = Math.max(...boxes.map((b) => b.y + b.h));
+  const xCandidates = [gx0, (gx0 + gx1) / 2, gx1];
+  const yCandidates = [gy0, (gy0 + gy1) / 2, gy1];
+
+  const selectedSet = new Set(it.objs);
+  let bestX = null, bestY = null;
+  for (const other of it.entry.objects) {
+    if (selectedSet.has(other) || other._editing) continue;
+    const ob = getBBox(other);
+    const ox0 = ob.x, oy0 = ob.y, ox1 = ob.x + ob.w, oy1 = ob.y + ob.h;
+    const targetXs = [ox0, (ox0 + ox1) / 2, ox1];
+    const targetYs = [oy0, (oy0 + oy1) / 2, oy1];
+    if (!axisLockX) {
+      for (const cand of xCandidates) {
+        for (const tx of targetXs) {
+          const diff = tx - cand;
+          if (Math.abs(diff) <= tol && (!bestX || Math.abs(diff) < Math.abs(bestX.diff))) {
+            bestX = { diff, x: tx, y0: Math.min(oy0, gy0), y1: Math.max(oy1, gy1) };
+          }
+        }
+      }
+    }
+    if (!axisLockY) {
+      for (const cand of yCandidates) {
+        for (const ty of targetYs) {
+          const diff = ty - cand;
+          if (Math.abs(diff) <= tol && (!bestY || Math.abs(diff) < Math.abs(bestY.diff))) {
+            bestY = { diff, y: ty, x0: Math.min(ox0, gx0), x1: Math.max(ox1, gx1) };
+          }
+        }
+      }
+    }
+  }
+  const guides = [];
+  let outDx = dx, outDy = dy;
+  if (bestX) {
+    outDx = dx + bestX.diff;
+    guides.push({ axis: "v", x: bestX.x, y0: bestX.y0, y1: bestX.y1 });
+  }
+  if (bestY) {
+    outDy = dy + bestY.diff;
+    guides.push({ axis: "h", y: bestY.y, x0: bestY.x0, x1: bestY.x1 });
+  }
+  return { dx: outDx, dy: outDy, guides };
+}
+
+// 吸附輔助線：畫在 overlay canvas 上的洋紅色虛線，跟框選預覽框（drawMarqueePreview）用同一套
+// 座標換算（要加回 PASTEBOARD_MARGIN，因為暫放區的物件也要能正常吸附、畫出輔助線）。
+function drawSnapGuidesPreview(entry, guides) {
+  if (!guides || !guides.length) return;
+  const ctx = entry.overlayCanvasEl.getContext("2d");
+  const scale = BACKING_DPR * state.zoom;
+  const toCanvasX = (x) => (x - entry.cropX + PASTEBOARD_MARGIN) * scale;
+  const toCanvasY = (y) => (y - entry.cropY + PASTEBOARD_MARGIN) * scale;
+  ctx.save();
+  ctx.strokeStyle = "#ff3b9a";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 3]);
+  guides.forEach((g) => {
+    ctx.beginPath();
+    if (g.axis === "v") {
+      ctx.moveTo(toCanvasX(g.x), toCanvasY(g.y0));
+      ctx.lineTo(toCanvasX(g.x), toCanvasY(g.y1));
+    } else {
+      ctx.moveTo(toCanvasX(g.x0), toCanvasY(g.y));
+      ctx.lineTo(toCanvasX(g.x1), toCanvasY(g.y));
+    }
+    ctx.stroke();
+  });
+  ctx.restore();
+}
+
 function updateInteraction(pt, e) {
   const it = state.interaction;
   if (!it) return;
   const ctrl = !!(e && e.ctrlKey);
   if (it.mode === "move") {
-    const dx = pt.x - it.start.x, dy = pt.y - it.start.y;
+    let dx = pt.x - it.start.x, dy = pt.y - it.start.y;
     if (!it.historyPushed && (Math.abs(dx) > 0.3 || Math.abs(dy) > 0.3)) {
       pushHistory(it.entry);
       it.historyPushed = true;
     }
+    // 按住 Ctrl：鎖定成單一方向移動，哪個方向拖得比較多就鎖那個方向，另一軸歸零
+    let axisLockX = false, axisLockY = false;
+    if (ctrl) {
+      if (Math.abs(dx) >= Math.abs(dy)) { dy = 0; axisLockY = true; }
+      else { dx = 0; axisLockX = true; }
+    }
+    // 靠近其他物件的邊緣／中心時自動吸附（磁貼效果），鎖定的軸不會再被吸附改動
+    const snap = computeMoveSnap(it, dx, dy, axisLockX, axisLockY);
+    dx = snap.dx;
+    dy = snap.dy;
     it.objs.forEach((obj, i) => applyMove(obj, it.origs[i], dx, dy));
+    redraw(it.entry);
+    drawSnapGuidesPreview(it.entry, snap.guides);
+    return; // 吸附輔助線畫在 overlay canvas 上，上面那行 redraw 已經重畫過一次了
   } else if (it.mode === "resize") {
     const dx = pt.x - it.start.x, dy = pt.y - it.start.y;
     if (!it.historyPushed && (Math.abs(dx) > 0.3 || Math.abs(dy) > 0.3)) {
@@ -2879,6 +3135,29 @@ function pickActivePage() {
   return best;
 }
 
+// 把一個圖片檔案變成頁面上的「圖片」物件（貼上、拖曳插入共用這段）。沒給 centerPt 就放在頁面正中央；
+// 外框套用目前「蓋章工具」記住的外框預設值（state.defaults.stamp.border），讓貼上／拖曳／蓋章
+// 三種插入照片的方式套用同一份外框設定，不用三個地方分別記一份。呼叫端自己負責 pushHistory。
+async function insertImageObjectAt(entry, file, centerPt) {
+  const dataUrl = await fileToDataUrl(file);
+  const dims = await getImageDims(dataUrl);
+  ensureCropDefaults(entry);
+  const pageW = entry.cropW, pageH = entry.cropH;
+  const maxW = pageW * 0.7, maxH = pageH * 0.7;
+  const ratio = Math.min(1, maxW / dims.w, maxH / dims.h);
+  const w = dims.w * ratio, h = dims.h * ratio;
+  const cx = centerPt ? centerPt.x : entry.cropX + pageW / 2;
+  const cy = centerPt ? centerPt.y : entry.cropY + pageH / 2;
+  const bd = state.defaults.stamp.border;
+  const obj = {
+    id: newId(), type: "image", x: cx - w / 2, y: cy - h / 2, w, h,
+    rotation: normalizeAngle(-getPageRotation(entry)), dataUrl,
+    border: { enabled: bd.enabled, color: bd.color, width: bd.width },
+  };
+  entry.objects.push(obj);
+  return obj;
+}
+
 window.addEventListener("paste", async (e) => {
   const tag = document.activeElement && document.activeElement.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA") return; // 讓一般文字欄位的貼上照常運作
@@ -2896,17 +3175,8 @@ window.addEventListener("paste", async (e) => {
     const entry = pickActivePage();
     if (!entry) return;
     try {
-      const dataUrl = await fileToDataUrl(imageFile);
-      const dims = await getImageDims(dataUrl);
-      ensureCropDefaults(entry);
-      const pageW = entry.cropW, pageH = entry.cropH;
-      const maxW = pageW * 0.7, maxH = pageH * 0.7;
-      const ratio = Math.min(1, maxW / dims.w, maxH / dims.h);
-      const w = dims.w * ratio, h = dims.h * ratio;
-      const x = entry.cropX + (pageW - w) / 2, y = entry.cropY + (pageH - h) / 2;
       pushHistory(entry);
-      const obj = { id: newId(), type: "image", x, y, w, h, rotation: normalizeAngle(-getPageRotation(entry)), dataUrl };
-      entry.objects.push(obj);
+      const obj = await insertImageObjectAt(entry, imageFile);
       setTool("pan");
       setSelected({ entry, objs: [obj] });
       redraw(entry);
@@ -3208,6 +3478,21 @@ function buildStampDefaultsPanel(d) {
     hint.textContent = "點頁面即可蓋章";
     toolOptionsEl.appendChild(hint);
   }
+  // 外框設定不限定要先選好印章圖片才能調：拖照片進頁面／貼上(Ctrl+V)照片時也是套用這裡的設定，
+  // 讓使用者只靠拖曳／貼上插入照片時，一樣有地方可以先設定好「新插入的照片要不要外框」。
+  if (!d.border) d.border = { enabled: false, color: "#000000", width: 2 };
+  addCheckbox(toolOptionsEl, "新插入照片加外框", d.border.enabled, (v) => {
+    d.border.enabled = v;
+    renderToolOptions();
+  });
+  if (d.border.enabled) {
+    addColorInput(toolOptionsEl, "外框顏色", d.border.color, (v) => (d.border.color = v));
+    addRangeInput(toolOptionsEl, "外框粗細", d.border.width, 1, 10, (v) => (d.border.width = v));
+  }
+  const dropHint = document.createElement("span");
+  dropHint.style.cssText = "font-size:12px;color:var(--label-c);";
+  dropHint.textContent = "照片也可以直接從電腦拖曳到頁面上，或用 Ctrl+V 貼上剪貼簿裡的照片";
+  toolOptionsEl.appendChild(dropHint);
 }
 
 function buildCropOptionsPanel() {
@@ -3267,6 +3552,16 @@ function buildObjectPanel(obj, entry) {
   } else if (obj.type === "highlight" || obj.type === "pen") {
     addColorInput(toolOptionsEl, "顏色", obj.color, (v) => withObjHistory(entry, () => (obj.color = v)));
     addRangeInput(toolOptionsEl, "粗細", obj.width, 1, 40, (v) => withObjHistory(entry, () => (obj.width = v)));
+  } else if (obj.type === "image") {
+    if (!obj.border) obj.border = { enabled: false, color: "#000000", width: 2 };
+    addCheckbox(toolOptionsEl, "外框", obj.border.enabled, (v) => {
+      withObjHistory(entry, () => (obj.border.enabled = v));
+      renderToolOptions();
+    });
+    if (obj.border.enabled) {
+      addColorInput(toolOptionsEl, "外框顏色", obj.border.color, (v) => withObjHistory(entry, () => (obj.border.color = v)));
+      addRangeInput(toolOptionsEl, "外框粗細", obj.border.width, 1, 10, (v) => withObjHistory(entry, () => (obj.border.width = v)));
+    }
   } else if (obj.type === "rect" || obj.type === "ellipse" || obj.type === "cloud") {
     addColorInput(toolOptionsEl, "邊框顏色", obj.stroke, (v) => withObjHistory(entry, () => (obj.stroke = v)));
     addRangeInput(toolOptionsEl, "邊框粗細", obj.strokeWidth, 0, 20, (v) => withObjHistory(entry, () => (obj.strokeWidth = v)));

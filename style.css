@@ -225,7 +225,12 @@ button.tool-btn[hidden] { display: none; }
 .thumb-context-menu button:hover { background: var(--context-hover-bg); }
 
 .viewer { flex: 1; position: relative; overflow: hidden; background: var(--bg); }
-.viewer-scroll { position: absolute; inset: 0; overflow: auto; padding: 24px; display: flex; flex-direction: column; align-items: center; gap: 20px; }
+.viewer-scroll { position: absolute; inset: 0; overflow: auto; padding: 24px; display: flex; flex-direction: column; align-items: safe center; gap: 20px; }
+/* page-row 是頁面外層再包一層的置中容器，寬高都包含上下左右的暫放區（見 app.js 的
+   PASTEBOARD_MARGIN／layoutPage()），這樣瀏覽器才會把暫放區算進可捲動範圍——否則「往左／
+   往上」超出視窗的暫放區，瀏覽器天生無法捲過去看。align-items 要搭配 safe 關鍵字，不然這個
+   容器本身太寬時一樣會卡到瀏覽器「置中時左側/上側溢出捲不到」的限制。 */
+.page-row { display: flex; justify-content: center; align-items: safe center; flex-shrink: 0; }
 
 #emptyState {
   position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
