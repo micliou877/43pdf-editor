@@ -3593,8 +3593,11 @@ async function restoreSession(data) {
   }
 }
 
+// 「強制重新整理」按鈕自己觸發的離開不用跳瀏覽器原生的「確定要離開嗎」確認視窗——
+// 已經在按下去的當下就先手動存檔了，這裡的提示是給「不小心」關掉分頁/視窗的情境用的。
+let skipUnloadConfirm = false;
 window.addEventListener("beforeunload", (e) => {
-  if (!state.pages.length) return;
+  if (skipUnloadConfirm || !state.pages.length) return;
   saveSession(); // 盡力即時存一次，不等 debounce
   e.preventDefault();
   e.returnValue = "";
@@ -3635,6 +3638,29 @@ $("#btnThemeToggle").addEventListener("click", () => {
   try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
   applyTheme(next);
 });
+
+/* ====== 強制重新整理（清除快取）======
+   畫面更新完看起來還是舊的、或是已安裝的 PWA 視窗卡在舊版 Service Worker 快取時用：
+   先盡力存一次目前編輯中的內容（可以在重整後的「要恢復上次編輯嗎」選擇要不要救回來），
+   再把 Service Worker 註冊與 Cache Storage 整個清掉，最後帶一個不會重複的網址參數重新
+   整理，確保瀏覽器不會用 HTTP 快取擋下重新抓取，一定會跟伺服器要最新的 index.html／
+   app.js／style.css。 */
+async function forceHardRefresh() {
+  try { saveSession(); } catch (e) {}
+  try {
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch (e) {}
+  skipUnloadConfirm = true;
+  location.href = location.pathname + "?_r=" + Date.now();
+}
+$("#btnHardRefresh").addEventListener("click", forceHardRefresh);
 
 /* ====== 工具庫：把用不到的工具從工具列隱藏起來 ====== */
 // 「瀏覽」工具不列在這裡——它是基本的瀏覽／選取操作，藏起來會讓人卡住沒辦法選物件，
