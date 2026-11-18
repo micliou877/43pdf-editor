@@ -12,7 +12,9 @@ const CSS_SCALE = 1.0;      // 100% 縮放時，1 PDF point = 1 CSS px
 const BACKING_DPR = 1.5;    // 畫面用的實際像素密度（清晰度）
 // 頁面左右兩側多留一塊「暫放區」，可以把物件拖出頁面範圍外暫時擺放（例如表格內容被頁面
 // 邊緣裁掉時，先把備註文字放在旁邊）；這塊區域只存在於畫面上，匯出 PDF 時不會印出來。
-const PASTEBOARD_MARGIN = 150;
+// 數值刻意留得很寬，蓋過一般視窗寬度下左右兩側看得到的灰色工作區，避免物件被拖到旁邊時
+// 一超出範圍就整個消失不見（實際上是畫到 overlay-canvas 的像素範圍之外，瀏覽器不會畫出來）。
+const PASTEBOARD_MARGIN = 2000;
 const TEXT_PAD = 4;         // 文字物件背景／外框的內距（point）
 const ROTATE_HANDLE_DIST = 26; // 旋轉把手離物件上緣的距離（point）
 
@@ -802,7 +804,7 @@ function showConfirm(message) {
     backdrop.innerHTML = `
       <div class="modal">
         <h3>請確認</h3>
-        <p style="margin:0;color:#333;font-size:14px;">${message}</p>
+        <p style="margin:0;color:#c9cdd6;font-size:14px;">${message}</p>
         <div class="modal-actions">
           <button data-act="cancel">取消</button>
           <button data-act="ok" class="primary">確定</button>
@@ -1743,7 +1745,7 @@ function attachPageInteractions(entry) {
         border: { enabled: d.border.enabled, color: d.border.color, width: d.border.width },
       };
       entry.objects.push(obj);
-      openObjectTextEditor(entry, obj, { selectAll: false });
+      openObjectTextEditor(entry, obj, { selectAll: false, switchToPanAfter: true });
     } else if (state.tool === "stamp") {
       const d = state.defaults.stamp;
       if (!d.dataUrl) {
@@ -2160,7 +2162,15 @@ function finishInteraction() {
     if (it.obj.points.length < 2) it.entry.objects.splice(it.entry.objects.indexOf(it.obj), 1);
   } else if (it.mode === "shape") {
     normalizeShape(it.obj);
-    if (Math.abs(it.obj.w) < 3 || Math.abs(it.obj.h) < 3) it.entry.objects.splice(it.entry.objects.indexOf(it.obj), 1);
+    if (Math.abs(it.obj.w) < 3 || Math.abs(it.obj.h) < 3) {
+      it.entry.objects.splice(it.entry.objects.indexOf(it.obj), 1);
+    } else {
+      // 用「圖形」工具拖曳建立完成後，直接切回瀏覽工具並選取它，方便立刻調整位置／大小，
+      // 不用再手動點一次瀏覽鈕（索引符號也走這個分支，一併套用）。
+      setSelected({ entry: it.entry, objs: [it.obj] });
+      setTool("pan");
+      return;
+    }
   } else if (it.mode === "crop") {
     if (it.current == null) return; // 沒有真的拖曳移動過（例如雙擊確認時前兩次單擊），保留原本的框
     const rect = cropRectFromPoints(it.start, it.current);
@@ -2347,6 +2357,12 @@ function openObjectTextEditor(entry, obj, opts) {
         const idx = entry.objects.indexOf(obj);
         if (idx >= 0) entry.objects.splice(idx, 1);
         if (state.selected && state.selected.objs.includes(obj)) setSelected(null);
+      } else if (opts.switchToPanAfter) {
+        // 用「新增文字」工具插入的文字，打完字結束編輯後直接切回瀏覽工具並選取它，
+        // 不用再手動點一次瀏覽鈕才能調整位置／大小。
+        setSelected({ entry, objs: [obj] });
+        setTool("pan");
+        return;
       }
     }
     redraw(entry);
@@ -2928,18 +2944,18 @@ function addDeleteButton(container) {
 
 function buildMultiObjectPanel(objs, entry) {
   const info = document.createElement("span");
-  info.style.cssText = "font-size:13px;color:#dbe2ea;";
+  info.style.cssText = "font-size:13px;color:#c9cdd6;";
   info.textContent = `已選取 ${objs.length} 個物件`;
   toolOptionsEl.appendChild(info);
   const lockedCount = objs.filter((o) => o.locked).length;
   if (lockedCount) {
     const lockedHint = document.createElement("span");
-    lockedHint.style.cssText = "font-size:12px;color:#9fb0c3;";
+    lockedHint.style.cssText = "font-size:12px;color:#9aa0ab;";
     lockedHint.textContent = `其中 ${lockedCount} 個已鎖定，不會被移動／縮放／刪除`;
     toolOptionsEl.appendChild(lockedHint);
   }
   const hint = document.createElement("span");
-  hint.style.cssText = "font-size:12px;color:#9fb0c3;";
+  hint.style.cssText = "font-size:12px;color:#9aa0ab;";
   hint.textContent = "拖曳其中一個可整批移動；拖右下角把手可整批縮放（按住 Ctrl 鎖定原本的長寬比例）";
   toolOptionsEl.appendChild(hint);
 
@@ -3035,7 +3051,7 @@ function buildShapeDefaultsPanel(d) {
   addColorInput(toolOptionsEl, "文字顏色", d.textColor, (v) => (d.textColor = v));
   addRangeInput(toolOptionsEl, "文字大小", d.fontSize, 8, 120, (v) => (d.fontSize = v));
   const hint = document.createElement("span");
-  hint.style.cssText = "font-size:12px;color:#9fb0c3;";
+  hint.style.cssText = "font-size:12px;color:#9aa0ab;";
   hint.textContent = "雙擊圖形可在中間打字";
   toolOptionsEl.appendChild(hint);
 }
@@ -3054,7 +3070,7 @@ function buildIndexMarkDefaultsPanel(d) {
   addColorInput(toolOptionsEl, "文字顏色", d.textColor, (v) => (d.textColor = v));
   addRangeInput(toolOptionsEl, "文字大小", d.fontSize, 8, 80, (v) => (d.fontSize = v));
   const hint = document.createElement("span");
-  hint.style.cssText = "font-size:12px;color:#9fb0c3;";
+  hint.style.cssText = "font-size:12px;color:#9aa0ab;";
   hint.textContent = "拖曳新增後雙擊可輸入文字；拖旋轉把手只會轉三角指標，文字不會跟著轉";
   toolOptionsEl.appendChild(hint);
 }
@@ -3070,11 +3086,11 @@ function buildStampDefaultsPanel(d) {
   if (d.dataUrl) {
     const preview = document.createElement("img");
     preview.src = d.dataUrl;
-    preview.style.cssText = "max-width:36px;max-height:36px;border:1px solid #556;border-radius:4px;vertical-align:middle;";
+    preview.style.cssText = "max-width:36px;max-height:36px;border:1px solid #2e323c;border-radius:4px;vertical-align:middle;";
     toolOptionsEl.appendChild(preview);
     addRangeInput(toolOptionsEl, "印章大小", d.targetW, 20, 400, (v) => (d.targetW = v));
     const hint = document.createElement("span");
-    hint.style.cssText = "font-size:12px;color:#9fb0c3;";
+    hint.style.cssText = "font-size:12px;color:#9aa0ab;";
     hint.textContent = "點頁面即可蓋章";
     toolOptionsEl.appendChild(hint);
   }
@@ -3082,7 +3098,7 @@ function buildStampDefaultsPanel(d) {
 
 function buildCropOptionsPanel() {
   const hint = document.createElement("span");
-  hint.style.cssText = "font-size:12px;color:#9fb0c3;";
+  hint.style.cssText = "font-size:12px;color:#9aa0ab;";
   hint.textContent = "拖曳框選範圍（可超出頁面邊緣，靠近原始頁面邊界會自動吸附）；放開後可拖曳四邊／四角的把手微調範圍，雙擊頁面套用裁切";
   toolOptionsEl.appendChild(hint);
   const cancelBtn = document.createElement("button");
@@ -3113,7 +3129,7 @@ function buildObjectPanel(obj, entry) {
   });
   if (obj.locked) {
     const hint = document.createElement("span");
-    hint.style.cssText = "font-size:12px;color:#9fb0c3;";
+    hint.style.cssText = "font-size:12px;color:#9aa0ab;";
     hint.textContent = "已鎖定：無法移動／縮放／旋轉／刪除／編輯，取消勾選即可恢復";
     toolOptionsEl.appendChild(hint);
     return;
