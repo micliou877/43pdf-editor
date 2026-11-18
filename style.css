@@ -322,9 +322,14 @@ button.tool-btn[hidden] { display: none; }
 @media (max-width: 760px) {
   .mobile-only { display: inline-flex; }
 
-  /* 觸控目標加大，輸入框字級固定16px避免iOS點擊時整頁自動放大 */
-  button { min-height: 40px; padding: 9px 12px; }
-  .tool-group button.tool-btn { padding: 9px 10px; }
+  /* 工具列按鈕很多，螢幕窄的時候一定放不下一整排：原本 .group 不會換行，
+     超出畫面的按鈕（例如裁切頁面、頁碼）會被 body 的 overflow:hidden 整個
+     切掉、完全點不到；這裡讓每個 .group 自己換行排列，按鈕文字維持單行
+     （不要擠成兩行字），寬度不夠就換到下一行，而不是被裁掉或擠得很醜 */
+  .toolbar { align-items: flex-start; }
+  .group { flex-wrap: wrap; row-gap: 6px; }
+  button { min-height: 38px; padding: 7px 9px; font-size: 13px; white-space: nowrap; }
+  .tool-group button.tool-btn { padding: 7px 8px; }
   .sidebar-actions button { min-height: 36px; }
   .modal input[type=text], .modal input[type=number], .modal select {
     padding: 9px; font-size: 16px;
