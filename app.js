@@ -38,7 +38,7 @@ const state = {
   interaction: null,    // 目前進行中的滑鼠操作
   currentTextEditor: null,
   lastActiveEntry: null,
-  objectClipboard: null, // 按 Ctrl+C 複製的物件（純資料，不含 _img 等暫存欄位），可以跨頁貼上
+  objectClipboard: null, // 按 Ctrl+C 複製的物件備份；平常貼上一律看系統剪貼簿，這個只在系統剪貼簿讀不到東西時當備援
   defaults: {
     text: { color: "#000000", fontSize: 20, bg: { enabled: false, color: "#ffff00" }, border: { enabled: false, color: "#000000", width: 2 } },
     highlight: { color: "#ffeb3b", width: 18 },
@@ -2729,21 +2729,33 @@ document.addEventListener("keydown", (e) => {
   } else if (e.ctrlKey && e.key.toLowerCase() === "c" && !typing && state.selected) {
     e.preventDefault();
     copySelectedObject();
-  } else if (e.ctrlKey && e.key.toLowerCase() === "v" && !typing && state.objectClipboard) {
-    e.preventDefault();
-    pasteClipboardObject();
   }
+  // Ctrl+V 不在這裡處理：交給下面的瀏覽器原生 paste 事件，才讀得到「電腦目前真正的剪貼簿內容」
+  // （keydown 事件本身拿不到剪貼簿資料），這樣從系統其他地方複製文字／圖片過來，貼上才會生效。
 });
 
-/* ---------------- 複製／貼上選取的物件（Ctrl+C／Ctrl+V，跟系統剪貼簿無關） ---------------- */
+/* ---------------- 複製／貼上選取的物件（Ctrl+C／Ctrl+V） ----------------
+   複製時除了存一份在記憶體裡（state.objectClipboard，當系統剪貼簿寫入失敗時的備援），
+   也會把物件資料包成一段帶標記的 JSON 字串寫進「真正的系統剪貼簿」。這樣使用者複製物件
+   之後，如果又跑去外面複製了別的文字或圖片，系統剪貼簿裡最新的就是那份外面複製的內容，
+   回到這裡按 Ctrl+V 時（見下面的 paste 事件）會優先讀系統剪貼簿目前真正裝的是什麼，
+   而不是死守著「這個分頁記得的上一次複製」，符合「隨時貼的都是電腦最新複製的東西」。 */
+
+const CLIP_TAG = "__pdfEditorClip";
 
 function copySelectedObject() {
   if (!state.selected) return;
-  state.objectClipboard = {
-    sourceEntry: state.selected.entry,
-    objs: state.selected.objs.map((o) => JSON.parse(JSON.stringify(o, cleanReplacer))),
-  };
-  const n = state.objectClipboard.objs.length;
+  const entry = state.selected.entry;
+  const objs = state.selected.objs.map((o) => JSON.parse(JSON.stringify(o, cleanReplacer)));
+  state.objectClipboard = { sourceEntry: entry, objs };
+  const payload = JSON.stringify({ [CLIP_TAG]: true, sourceRotation: getPageRotation(entry), objs });
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(payload).catch(() => {
+      // 系統剪貼簿寫入失敗（例如權限被擋）時，還是有上面的 state.objectClipboard 當備援，
+      // 同一個分頁裡還是能貼上，只是換到別的分頁/視窗就讀不到了。
+    });
+  }
+  const n = objs.length;
   toast(n > 1 ? `已複製 ${n} 個物件` : "已複製物件");
 }
 
@@ -2751,30 +2763,24 @@ function getPageRotation(entry) {
   return (((entry.baseRotation + entry.userDelta) % 360) + 360) % 360;
 }
 
-function pasteClipboardObject() {
-  const clip = state.objectClipboard;
-  if (!clip) return;
+// 把還原出來的物件陣列實際貼進目前作用中的頁面；offset 固定會加一點位移，
+// 不管貼到同一頁還是別頁，都能馬上看出「這是新貼上的一份」、不會跟原本的疊在一起看不出來。
+function pasteObjectsIntoActivePage(objs, sourceRotation) {
   const targetEntry = pickActivePage();
   if (!targetEntry) return;
-  // 貼回原本複製的那一頁才稍微偏移位置（才看得出是新貼的一份）；貼到別頁就直接貼在同一個位置
-  const offset = targetEntry === clip.sourceEntry ? 16 : 0;
-  // 物件的 rotation 是相對於「頁面本身未旋轉的原始方向」，如果來源頁跟目的頁的頁面旋轉角度
-  // 不一樣（例如一個是直的、一個是橫的），同樣的 rotation 畫面上看起來就會不一樣。
-  // 這裡補上兩頁旋轉角度的差，讓貼過去的物件「畫面上看起來」維持原本一樣的方向。
-  const rotationFix = getPageRotation(clip.sourceEntry) - getPageRotation(targetEntry);
-  const newObjs = clip.objs.map((o) => {
+  const offset = 16;
+  const rotationFix = sourceRotation != null ? sourceRotation - getPageRotation(targetEntry) : 0;
+  const newObjs = objs.map((o) => {
     const obj = JSON.parse(JSON.stringify(o, cleanReplacer));
     obj.id = newId();
     obj.locked = false; // 貼上永遠是新的一份，不繼承來源物件的鎖定狀態
     if (rotationFix && typeof obj.rotation === "number") {
       obj.rotation = normalizeAngle(obj.rotation + rotationFix);
     }
-    if (offset) {
-      if (obj.points) obj.points = obj.points.map((p) => ({ x: p.x + offset, y: p.y + offset }));
-      else {
-        obj.x = (obj.x || 0) + offset;
-        obj.y = (obj.y || 0) + offset;
-      }
+    if (obj.points) obj.points = obj.points.map((p) => ({ x: p.x + offset, y: p.y + offset }));
+    else {
+      obj.x = (obj.x || 0) + offset;
+      obj.y = (obj.y || 0) + offset;
     }
     return obj;
   });
@@ -2787,7 +2793,34 @@ function pasteClipboardObject() {
   toast(newObjs.length > 1 ? `已貼上 ${newObjs.length} 個物件` : "已貼上物件");
 }
 
-/* ---------------- 貼上圖片（Ctrl+V） ---------------- */
+// 貼上一段純文字（從系統剪貼簿來的，不是我們自己複製的物件）：直接當成一個新的文字物件
+// 插入目前作用中的頁面正中央，套用「新增文字」工具目前的預設樣式（顏色／字級等）。
+function pasteTextAsObject(text) {
+  text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (!text.trim()) return;
+  const entry = pickActivePage();
+  if (!entry) return;
+  ensureCropDefaults(entry);
+  const d = state.defaults.text;
+  const box = measureTextBoxPt(text, d.fontSize);
+  const x = entry.cropX + (entry.cropW - box.w) / 2 + TEXT_PAD;
+  const y = entry.cropY + (entry.cropH - box.h) / 2 + TEXT_PAD;
+  const obj = {
+    id: newId(), type: "text", x, y, text, rotation: normalizeAngle(-getPageRotation(entry)),
+    color: d.color, fontSize: d.fontSize,
+    bg: { enabled: d.bg.enabled, color: d.bg.color },
+    border: { enabled: d.border.enabled, color: d.border.color, width: d.border.width },
+  };
+  pushHistory(entry);
+  entry.objects.push(obj);
+  setTool("pan");
+  setSelected({ entry, objs: [obj] });
+  redraw(entry);
+  renderToolOptions();
+  toast("已貼上文字");
+}
+
+/* ---------------- 貼上（Ctrl+V）：一律看系統剪貼簿「現在真正裝的是什麼」 ---------------- */
 
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -2833,30 +2866,55 @@ window.addEventListener("paste", async (e) => {
       break;
     }
   }
-  if (!imageFile) return;
-  e.preventDefault();
-  const entry = pickActivePage();
-  if (!entry) return;
-  try {
-    const dataUrl = await fileToDataUrl(imageFile);
-    const dims = await getImageDims(dataUrl);
-    ensureCropDefaults(entry);
-    const pageW = entry.cropW, pageH = entry.cropH;
-    const maxW = pageW * 0.7, maxH = pageH * 0.7;
-    const ratio = Math.min(1, maxW / dims.w, maxH / dims.h);
-    const w = dims.w * ratio, h = dims.h * ratio;
-    const x = entry.cropX + (pageW - w) / 2, y = entry.cropY + (pageH - h) / 2;
-    pushHistory(entry);
-    const obj = { id: newId(), type: "image", x, y, w, h, rotation: normalizeAngle(-getPageRotation(entry)), dataUrl };
-    entry.objects.push(obj);
-    setTool("pan");
-    setSelected({ entry, objs: [obj] });
-    redraw(entry);
-    renderToolOptions();
-    toast("已貼上圖片");
-  } catch (err) {
-    console.error(err);
-    toast("貼上圖片失敗：" + err.message, true);
+  if (imageFile) {
+    e.preventDefault();
+    const entry = pickActivePage();
+    if (!entry) return;
+    try {
+      const dataUrl = await fileToDataUrl(imageFile);
+      const dims = await getImageDims(dataUrl);
+      ensureCropDefaults(entry);
+      const pageW = entry.cropW, pageH = entry.cropH;
+      const maxW = pageW * 0.7, maxH = pageH * 0.7;
+      const ratio = Math.min(1, maxW / dims.w, maxH / dims.h);
+      const w = dims.w * ratio, h = dims.h * ratio;
+      const x = entry.cropX + (pageW - w) / 2, y = entry.cropY + (pageH - h) / 2;
+      pushHistory(entry);
+      const obj = { id: newId(), type: "image", x, y, w, h, rotation: normalizeAngle(-getPageRotation(entry)), dataUrl };
+      entry.objects.push(obj);
+      setTool("pan");
+      setSelected({ entry, objs: [obj] });
+      redraw(entry);
+      renderToolOptions();
+      toast("已貼上圖片");
+    } catch (err) {
+      console.error(err);
+      toast("貼上圖片失敗：" + err.message, true);
+    }
+    return;
+  }
+
+  // 沒有圖片 → 看系統剪貼簿裡現在裝的文字：如果是我們自己複製物件時寫進去、帶著
+  // CLIP_TAG 標記的那種 JSON，就還原成原本的物件（顏色／大小／旋轉都跟原本一樣）；
+  // 不是的話（真的只是一段文字，從別的地方複製來的）就直接貼成一個新的文字物件。
+  const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+  if (text && text.trim()) {
+    e.preventDefault();
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch (err) { parsed = null; }
+    if (parsed && parsed[CLIP_TAG] && Array.isArray(parsed.objs) && parsed.objs.length) {
+      pasteObjectsIntoActivePage(parsed.objs, parsed.sourceRotation);
+    } else {
+      pasteTextAsObject(text);
+    }
+    return;
+  }
+
+  // 系統剪貼簿讀不到文字也沒有圖片（例如寫入系統剪貼簿失敗過、或瀏覽器權限擋住讀取）時，
+  // 退回去用這個分頁自己記得的上一次複製內容，至少同一個分頁裡複製貼上還能正常運作。
+  if (state.objectClipboard) {
+    e.preventDefault();
+    pasteObjectsIntoActivePage(state.objectClipboard.objs, getPageRotation(state.objectClipboard.sourceEntry));
   }
 });
 
