@@ -359,6 +359,11 @@ button.tool-btn[hidden] { display: none; }
     position: fixed; inset: 0; background: rgba(0, 0, 0, .5); z-index: 75;
   }
   .sidebar-backdrop[hidden] { display: none; }
+  /* 背景遮罩理論上 z-index 比抽屜本身低，點抽屜上的按鈕應該不會被遮罩擋到；但為了不管在哪種
+     瀏覽器／堆疊層級判定下都保證點得到按鈕，乾脆讓遮罩的範圍直接「讓開」抽屜佔的那一塊，
+     兩者在幾何上完全不重疊，就不會有任何遮罩蓋住按鈕、點了只關抽屜卻沒觸發按鈕本身動作的可能。 */
+  #sidebarBackdrop { left: min(78vw, 300px); }
+  #moreMenuBackdrop { right: min(78vw, 320px); }
 
   /* 縮圖旋轉／更多選項按鈕：手機沒有 hover，固定顯示而不是靠滑鼠移過去才出現 */
   .thumb-item .thumb-rot { opacity: 1; top: 4px; right: 4px; gap: 4px; }
