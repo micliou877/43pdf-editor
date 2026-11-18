@@ -145,6 +145,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .group { display: flex; align-items: center; gap: 6px; }
 .group[hidden] { display: none; }
 .tool-group { background: var(--tool-group-bg); padding: 3px; border-radius: 8px; }
+.mobile-only { display: none; }
 
 button {
   font-family: inherit; font-size: 14px; padding: 6px 10px; border-radius: 8px;
@@ -181,6 +182,8 @@ button.tool-btn[hidden] { display: none; }
   padding: 8px 10px; font-size: 13px; font-weight: 700; color: var(--sidebar-head-text);
   border-bottom: 1px solid var(--sidebar-head-border); display: flex; flex-direction: column; gap: 6px;
 }
+.sidebar-head-row { display: flex; align-items: center; justify-content: space-between; }
+#btnCloseSidebar { padding: 2px 8px; min-height: auto; }
 .sidebar-actions { display: flex; gap: 6px; }
 .sidebar-actions button { flex: 1; font-size: 12px; padding: 4px 4px; }
 .thumb-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
@@ -317,5 +320,33 @@ button.tool-btn[hidden] { display: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 760px) {
-  .sidebar { display: none; }
+  .mobile-only { display: inline-flex; }
+
+  /* 觸控目標加大，輸入框字級固定16px避免iOS點擊時整頁自動放大 */
+  button { min-height: 40px; padding: 9px 12px; }
+  .tool-group button.tool-btn { padding: 9px 10px; }
+  .sidebar-actions button { min-height: 36px; }
+  .modal input[type=text], .modal input[type=number], .modal select {
+    padding: 9px; font-size: 16px;
+  }
+  .modal label.checkbox input[type=checkbox] { width: 20px; height: 20px; }
+  .modal { width: min(320px, 92vw); padding: 18px 20px; }
+
+  /* 頁面縮圖側邊欄在手機上改成從左邊滑出的抽屜，不佔用原本就很窄的畫面寬度，
+     用 #btnToggleSidebar 開關、點背景遮罩（#sidebarBackdrop）可以關閉 */
+  .sidebar {
+    display: flex; position: fixed; top: 0; bottom: 0; left: 0; z-index: 80;
+    width: 78vw; max-width: 300px;
+    transform: translateX(-100%); transition: transform .2s ease;
+    box-shadow: 2px 0 20px rgba(0, 0, 0, .5);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-backdrop {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, .5); z-index: 75;
+  }
+  .sidebar-backdrop[hidden] { display: none; }
+
+  /* 縮圖旋轉／更多選項按鈕：手機沒有 hover，固定顯示而不是靠滑鼠移過去才出現 */
+  .thumb-item .thumb-rot { opacity: 1; top: 4px; right: 4px; gap: 4px; }
+  .thumb-item .thumb-rot button { padding: 6px 8px; font-size: 13px; }
 }

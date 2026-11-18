@@ -450,6 +450,10 @@ function buildThumb(entry) {
   btnR.title = "向右旋轉";
   rotWrap.appendChild(btnL);
   rotWrap.appendChild(btnR);
+  const btnMore = document.createElement("button");
+  btnMore.textContent = "⋮";
+  btnMore.title = "更多選項（複製／插入空白頁／刪除／移動）";
+  rotWrap.appendChild(btnMore);
 
   const num = document.createElement("div");
   num.className = "thumb-num";
@@ -476,6 +480,7 @@ function buildThumb(entry) {
       goToPage(state.pages.indexOf(entry));
     }
     highlightCurrent(entry);
+    setSidebarOpen(false);
   });
   btnL.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -484,6 +489,11 @@ function buildThumb(entry) {
   btnR.addEventListener("click", (e) => {
     e.stopPropagation();
     rotatePage(entry, 90);
+  });
+  btnMore.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const r = btnMore.getBoundingClientRect();
+    showThumbContextMenu(entry, r.right, r.bottom);
   });
   check.addEventListener("change", updateSelectionButtons);
 
@@ -662,11 +672,15 @@ function showThumbContextMenu(entry, x, y) {
   closeThumbContextMenu();
   const menu = document.createElement("div");
   menu.className = "thumb-context-menu";
+  const idx = state.pages.indexOf(entry);
   const items = [
     { label: "📄 複製此頁", action: () => duplicatePage(entry) },
     { label: "➕ 在此頁後插入空白頁", action: () => insertBlankPage(entry) },
     { label: "🗑 刪除此頁", action: () => deleteSinglePage(entry) },
   ];
+  // 拖曳排序（HTML5 drag-and-drop）在手機觸控上沒辦法用，所以用選單按鈕做替代方案
+  if (idx > 0) items.push({ label: "⬆️ 上移一頁", action: () => reorderPages(entry, state.pages[idx - 1]) });
+  if (idx < state.pages.length - 1) items.push({ label: "⬇️ 下移一頁", action: () => reorderPages(entry, state.pages[idx + 1]) });
   items.forEach((it) => {
     const b = document.createElement("button");
     b.textContent = it.label;
@@ -982,6 +996,7 @@ function setTool(tool) {
   state.pages.forEach((p) => {
     p.textLayerEl.classList.toggle("edit-mode", tool === "edittext");
     p.overlayCanvasEl.style.pointerEvents = tool === "edittext" ? "none" : "auto";
+    p.overlayCanvasEl.style.touchAction = tool === "pan" ? "pan-y" : "none";
     redraw(p);
   });
   renderToolOptions();
@@ -1653,9 +1668,14 @@ function getSelectionBBox(objs) {
 function bboxIntersects(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
+// 手指比滑鼠游標粗很多，觸控時把縮放／旋轉把手的可點擊範圍放大，不然在手機上幾乎點不到
+let lastPointerIsTouch = false;
+function handleThresholdPt() {
+  return (lastPointerIsTouch ? 22 : 10) / state.zoom;
+}
 function isOnGroupResizeHandle(b, pt) {
   const hx = b.x + b.w, hy = b.y + b.h;
-  const thresholdPt = 10 / state.zoom;
+  const thresholdPt = handleThresholdPt();
   return Math.hypot(pt.x - hx, pt.y - hy) <= thresholdPt;
 }
 function hitTest(entry, pt) {
@@ -1673,7 +1693,7 @@ function isOnResizeHandle(obj, pt) {
   const lp = toLocalPointForBBox(obj, pt);
   const b = getBBox(obj);
   const hx = b.x + b.w, hy = b.y + b.h;
-  const thresholdPt = 10 / state.zoom;
+  const thresholdPt = handleThresholdPt();
   return Math.hypot(lp.x - hx, lp.y - hy) <= thresholdPt;
 }
 function isOnRotateHandle(obj, pt) {
@@ -1681,7 +1701,7 @@ function isOnRotateHandle(obj, pt) {
   const lp = toLocalPoint(obj, pt);
   const b = getBBox(obj);
   const hx = b.x + b.w / 2, hy = b.y - ROTATE_HANDLE_DIST;
-  const thresholdPt = 10 / state.zoom;
+  const thresholdPt = handleThresholdPt();
   return Math.hypot(lp.x - hx, lp.y - hy) <= thresholdPt;
 }
 function cloneObj(obj) {
@@ -1717,8 +1737,13 @@ function eventToPoint(entry, e) {
 
 function attachPageInteractions(entry) {
   const canvas = entry.overlayCanvasEl;
+  // 「瀏覽」工具時允許手機原生垂直滑動（touch-action:none 預設會整個擋掉觸控手勢，
+  // 讓手機只能用側邊欄按鈕翻頁、完全沒辦法用手指滑動看文件），其他會在畫布上畫東西
+  // 的工具（畫筆／螢光筆／圖形／裁切）才需要完全攔截手勢，避免畫到一半被當成滑動取消
+  canvas.style.touchAction = state.tool === "pan" ? "pan-y" : "none";
 
   canvas.addEventListener("pointerdown", (e) => {
+    lastPointerIsTouch = e.pointerType === "touch";
     if (state.currentTextEditor) closeTextEditor(true);
     if (state.tool === "edittext" || state.tool === "text") return;
     e.preventDefault();
@@ -3719,6 +3744,18 @@ async function forceHardRefresh() {
   location.href = location.pathname + "?_r=" + Date.now();
 }
 $("#btnHardRefresh").addEventListener("click", forceHardRefresh);
+
+/* ====== 手機版：頁面縮圖側邊欄改成滑出式抽屜 ======
+   手機螢幕太窄，側邊欄平常收起來，按工具列的「📑 頁面」按鈕才滑出，
+   點背景遮罩或關閉鈕收回去；桌面版因為CSS media query沒套用.open相關樣式，
+   這些class切換不會影響桌面版外觀。 */
+function setSidebarOpen(open) {
+  $("#sidebar").classList.toggle("open", open);
+  $("#sidebarBackdrop").hidden = !open;
+}
+$("#btnToggleSidebar").addEventListener("click", () => setSidebarOpen(true));
+$("#btnCloseSidebar").addEventListener("click", () => setSidebarOpen(false));
+$("#sidebarBackdrop").addEventListener("click", () => setSidebarOpen(false));
 
 /* ====== 工具庫：把用不到的工具從工具列隱藏起來 ====== */
 // 「瀏覽」工具不列在這裡——它是基本的瀏覽／選取操作，藏起來會讓人卡住沒辦法選物件，
