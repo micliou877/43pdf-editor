@@ -146,6 +146,11 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .group[hidden] { display: none; }
 .tool-group { background: var(--tool-group-bg); padding: 3px; border-radius: 8px; }
 .mobile-only { display: none; }
+/* 桌面版：#moreMenuPanel 只是個邏輯分組，display:contents 讓它在版面上「隱形」，
+   裡面的 .group 直接變成 .toolbar 的子項，跟以前完全沒有這層包裝時看起來一樣；
+   手機版才會在 media query 裡把它實體化成側邊抽屜（見下方） */
+#moreMenuPanel { display: contents; }
+.more-menu-head { display: none; }
 
 button {
   font-family: inherit; font-size: 14px; padding: 6px 10px; border-radius: 8px;
@@ -321,15 +326,14 @@ button.tool-btn[hidden] { display: none; }
 
 @media (max-width: 760px) {
   .mobile-only { display: inline-flex; }
+  .more-menu-head { display: flex; align-items: center; justify-content: space-between; font-weight: 700; }
 
-  /* 工具列按鈕很多，螢幕窄的時候一定放不下一整排：原本 .group 不會換行，
-     超出畫面的按鈕（例如裁切頁面、頁碼）會被 body 的 overflow:hidden 整個
-     切掉、完全點不到；這裡讓每個 .group 自己換行排列，按鈕文字維持單行
-     （不要擠成兩行字），寬度不夠就換到下一行，而不是被裁掉或擠得很醜 */
-  .toolbar { align-items: flex-start; }
+  /* 頂端只留最常用的幾個按鈕（開檔／下載／復原／縮放／頁面／更多），
+     其餘的交給下面的「更多功能」抽屜跟底部工具列，寬度不夠就換行，
+     不會像以前那樣整排擠成兩行字或被切到畫面外點不到 */
+  .toolbar { align-items: flex-start; padding-bottom: 6px; }
   .group { flex-wrap: wrap; row-gap: 6px; }
   button { min-height: 38px; padding: 7px 9px; font-size: 13px; white-space: nowrap; }
-  .tool-group button.tool-btn { padding: 7px 8px; }
   .sidebar-actions button { min-height: 36px; }
   .modal input[type=text], .modal input[type=number], .modal select {
     padding: 9px; font-size: 16px;
@@ -354,4 +358,43 @@ button.tool-btn[hidden] { display: none; }
   /* 縮圖旋轉／更多選項按鈕：手機沒有 hover，固定顯示而不是靠滑鼠移過去才出現 */
   .thumb-item .thumb-rot { opacity: 1; top: 4px; right: 4px; gap: 4px; }
   .thumb-item .thumb-rot button { padding: 6px 8px; font-size: 13px; }
+
+  /* 「更多功能」面板：次要的檔案操作、檢視模式、翻頁、偏好設定收在這裡，
+     從右邊滑出（跟左邊滑出的頁面縮圖抽屜對稱），每個按鈕獨立一整排——
+     參考 iOS 設定／Apple Notes 選單的做法，一排一個選項，比擠成一堆
+     小按鈕好認也好按；點背景或右上角✕可以關閉 */
+  #moreMenuPanel {
+    display: flex; flex-direction: column; gap: 16px;
+    position: fixed; top: 0; bottom: 0; right: 0; z-index: 82;
+    width: 78vw; max-width: 320px; padding: 16px;
+    background: var(--toolbar-bg); color: var(--toolbar-text); overflow-y: auto;
+    transform: translateX(100%); transition: transform .2s ease;
+    box-shadow: -2px 0 20px rgba(0, 0, 0, .5);
+  }
+  #moreMenuPanel.open { transform: translateX(0); }
+  #moreMenuPanel .group { flex-direction: column; align-items: stretch; flex-wrap: nowrap; row-gap: 8px; }
+  #moreMenuPanel .group.tool-group { background: none; padding: 0; }
+  #moreMenuPanel button { justify-content: flex-start; text-align: left; }
+
+  /* 瀏覽／標註工具改成固定在螢幕最下面的工具列（參考 Apple Notes 的標記工具列），
+     只顯示圖示、可以橫向滑動，不會因為放不下而被切到畫面外、完全點不到；
+     目前工具的選項（顏色／粗細／形狀種類）浮在工具列正上方，平常不佔空間，
+     選到有選項的工具才會冒出來 */
+  .main { padding-bottom: 60px; }
+  #toolGroup {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 70;
+    margin: 0; border-radius: 0; background: var(--toolbar-bg);
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    flex-wrap: nowrap; overflow-x: auto; gap: 6px;
+    box-shadow: 0 -2px 10px var(--toolbar-shadow);
+  }
+  #toolGroup .tool-btn { flex: 0 0 auto; min-width: 46px; font-size: 19px; padding: 8px; }
+  #toolGroup .tool-btn .btn-label { display: none; }
+  #toolOptions:not(:empty) {
+    position: fixed; left: 0; right: 0; bottom: 58px; z-index: 71;
+    margin: 0; border-radius: 0; background: var(--toolbar-bg);
+    padding: 8px 10px; flex-wrap: wrap; row-gap: 8px;
+    max-height: 38vh; overflow-y: auto;
+    box-shadow: 0 -2px 10px var(--toolbar-shadow);
+  }
 }

@@ -18,57 +18,62 @@
 <header class="toolbar">
   <div class="brand">📄 PDF 閱讀編輯器</div>
 
-  <div class="group">
-    <button id="btnOpen" title="開啟一個新的 PDF（會取代目前內容）">開啟檔案</button>
-    <button id="btnAppend" title="加入另一份 PDF，接在目前頁面後面（合併）">加入合併</button>
-    <button id="btnBlankPage" title="建立空白頁面，可自訂紙張尺寸；若尚未開啟任何檔案，會直接開啟成新文件，否則會加到目前文件最後面">📃 空白頁面</button>
-    <button id="btnDownload" class="primary" disabled>下載 PDF</button>
-  </div>
-
-  <div class="group tool-group" id="toolGroup">
-    <button class="tool-btn active" data-tool="pan" title="瀏覽／選取物件：點選可移動、拖角可縮放（圖片按住 Ctrl 可等比例縮放）、拖上方圓點可旋轉（按住 Ctrl 鎖定 90 度）、雙擊文字可改內容、Delete 鍵刪除。按住 Shift 點選可多選，或直接拖曳空白處框選多個物件；多選後可一起移動／縮放（按住 Ctrl 鎖定原本比例），也可以 Ctrl+C／Ctrl+V 複製貼上（貼到別頁會貼在同一個位置）">🖐 瀏覽</button>
-    <button class="tool-btn" data-tool="text" title="點一下頁面新增文字（加入後仍可再編輯／旋轉）">🔤 新增文字</button>
-    <button class="tool-btn" data-tool="highlight" title="像真的螢光筆一樣，拖曳塗畫標註；按住 Ctrl 可畫直線">🖍 螢光筆</button>
-    <button class="tool-btn" data-tool="pen" title="自由畫筆，可用來簽名；按住 Ctrl 可畫直線">✍️ 畫筆</button>
-    <button class="tool-btn" data-tool="shape" title="拖曳新增方形、橢圓、雲型線或索引符號（可在上方選擇種類，都可旋轉／填色）；按住 Ctrl 可畫正方形／正圓形；雙擊圖形可在中間打字">⬛ 圖形</button>
-    <button class="tool-btn" data-tool="stamp" title="先在上方選擇自己的印章圖片，再點頁面蓋章">🖼 蓋章</button>
-    <button class="tool-btn" data-tool="edittext" title="點選既有文字進行取代">✏️ 編輯文字</button>
-    <button class="tool-btn" data-tool="watermark" title="為所有頁面加上浮水印">💧 浮水印</button>
-    <button class="tool-btn" data-tool="crop" title="拖曳框選要保留的範圍（可超出頁面邊緣，用來增加頁面大小），放開後雙擊頁面才會真的套用裁切">✂ 裁切頁面</button>
-    <button class="tool-btn" data-tool="pagenum" title="為所有頁面加上頁碼">🔢 頁碼</button>
-  </div>
-
-  <div class="group" id="toolOptions"></div>
-
-  <div class="group">
+  <div class="group" id="primaryGroup">
+    <button id="btnOpen" title="開啟一個新的 PDF（會取代目前內容）">📂 開啟檔案</button>
+    <button id="btnDownload" class="primary" disabled>⬇️ 下載 PDF</button>
     <button id="btnUndo" title="復原目前頁面最後一個標註動作（Ctrl+Z）" disabled>↩ 復原</button>
     <button id="btnZoomOut" disabled>－</button>
     <span id="zoomLabel">100%</span>
     <button id="btnZoomIn" disabled>＋</button>
+    <button id="btnToggleSidebar" class="mobile-only" title="開啟／關閉頁面縮圖清單">📑</button>
+    <button id="btnMoreMenu" class="mobile-only" title="更多功能">⋯</button>
   </div>
 
-  <div class="group tool-group" id="viewGroup">
-    <button class="tool-btn view-btn active" data-view="scroll" title="連續捲動瀏覽全部頁面（原本的瀏覽方式）">📜 連續捲動</button>
-    <button class="tool-btn view-btn" data-view="single" title="一次只看一頁，滾動滑鼠滾輪切換上／下一頁">📄 單頁</button>
-    <button class="tool-btn view-btn" data-view="spread" title="像書本一樣，兩頁並排顯示，滾動滑鼠滾輪換下一組">📖 雙頁並排</button>
+  <div class="group tool-group" id="toolGroup">
+    <button class="tool-btn active" data-tool="pan" title="瀏覽／選取物件：點選可移動、拖角可縮放（圖片按住 Ctrl 可等比例縮放）、拖上方圓點可旋轉（按住 Ctrl 鎖定 90 度）、雙擊文字可改內容、Delete 鍵刪除。按住 Shift 點選可多選，或直接拖曳空白處框選多個物件；多選後可一起移動／縮放（按住 Ctrl 鎖定原本比例），也可以 Ctrl+C／Ctrl+V 複製貼上（貼到別頁會貼在同一個位置）">🖐<span class="btn-label"> 瀏覽</span></button>
+    <button class="tool-btn" data-tool="text" title="點一下頁面新增文字（加入後仍可再編輯／旋轉）">🔤<span class="btn-label"> 新增文字</span></button>
+    <button class="tool-btn" data-tool="highlight" title="像真的螢光筆一樣，拖曳塗畫標註；按住 Ctrl 可畫直線">🖍<span class="btn-label"> 螢光筆</span></button>
+    <button class="tool-btn" data-tool="pen" title="自由畫筆，可用來簽名；按住 Ctrl 可畫直線">✍️<span class="btn-label"> 畫筆</span></button>
+    <button class="tool-btn" data-tool="shape" title="拖曳新增方形、橢圓、雲型線或索引符號（可在上方選擇種類，都可旋轉／填色）；按住 Ctrl 可畫正方形／正圓形；雙擊圖形可在中間打字">⬛<span class="btn-label"> 圖形</span></button>
+    <button class="tool-btn" data-tool="stamp" title="先在上方選擇自己的印章圖片，再點頁面蓋章">🖼<span class="btn-label"> 蓋章</span></button>
+    <button class="tool-btn" data-tool="edittext" title="點選既有文字進行取代">✏️<span class="btn-label"> 編輯文字</span></button>
+    <button class="tool-btn" data-tool="watermark" title="為所有頁面加上浮水印">💧<span class="btn-label"> 浮水印</span></button>
+    <button class="tool-btn" data-tool="crop" title="拖曳框選要保留的範圍（可超出頁面邊緣，用來增加頁面大小），放開後雙擊頁面才會真的套用裁切">✂<span class="btn-label"> 裁切頁面</span></button>
+    <button class="tool-btn" data-tool="pagenum" title="為所有頁面加上頁碼">🔢<span class="btn-label"> 頁碼</span></button>
   </div>
 
-  <div class="group" id="pageNav" hidden>
-    <button id="btnPrevPage" title="上一頁">◀</button>
-    <span id="pageIndicator">1 / 1</span>
-    <button id="btnNextPage" title="下一頁">▶</button>
-  </div>
+  <div class="group" id="toolOptions"></div>
 
-  <div class="group" id="prefsGroup">
-    <button id="btnToggleSidebar" class="mobile-only" title="開啟／關閉頁面縮圖清單">📑 頁面</button>
-    <button id="btnToolLibrary" title="選擇要在工具列顯示哪些工具，不用的可以先隱藏起來">🧰 工具庫</button>
-    <button id="btnThemeToggle" title="切換暗黑模式／一般模式（白底）">🌙 暗黑模式</button>
-    <button id="btnHardRefresh" title="畫面更新後看起來還是舊的、或已安裝的版本卡在舊版時用這個：清掉快取並重新整理，目前編輯中的內容會先自動存檔，重整後可以選擇恢復">🔄 強制重新整理（清除快取）</button>
+  <div id="moreMenuPanel">
+    <div class="more-menu-head">
+      <span>更多功能</span>
+      <button id="btnCloseMoreMenu" title="關閉">✕</button>
+    </div>
+    <div class="group">
+      <button id="btnAppend" title="加入另一份 PDF，接在目前頁面後面（合併）">📎 加入合併</button>
+      <button id="btnBlankPage" title="建立空白頁面，可自訂紙張尺寸；若尚未開啟任何檔案，會直接開啟成新文件，否則會加到目前文件最後面">📃 空白頁面</button>
+    </div>
+    <div class="group tool-group" id="viewGroup">
+      <button class="tool-btn view-btn active" data-view="scroll" title="連續捲動瀏覽全部頁面（原本的瀏覽方式）">📜 連續捲動</button>
+      <button class="tool-btn view-btn" data-view="single" title="一次只看一頁，滾動滑鼠滾輪切換上／下一頁">📄 單頁</button>
+      <button class="tool-btn view-btn" data-view="spread" title="像書本一樣，兩頁並排顯示，滾動滑鼠滾輪換下一組">📖 雙頁並排</button>
+    </div>
+    <div class="group" id="pageNav" hidden>
+      <button id="btnPrevPage" title="上一頁">◀ 上一頁</button>
+      <span id="pageIndicator">1 / 1</span>
+      <button id="btnNextPage" title="下一頁">下一頁 ▶</button>
+    </div>
+    <div class="group" id="prefsGroup">
+      <button id="btnToolLibrary" title="選擇要在工具列顯示哪些工具，不用的可以先隱藏起來">🧰 工具庫</button>
+      <button id="btnThemeToggle" title="切換暗黑模式／一般模式（白底）">🌙 暗黑模式</button>
+      <button id="btnHardRefresh" title="畫面更新後看起來還是舊的、或已安裝的版本卡在舊版時用這個：清掉快取並重新整理，目前編輯中的內容會先自動存檔，重整後可以選擇恢復">🔄 強制重新整理（清除快取）</button>
+    </div>
   </div>
 </header>
 
 <div class="main">
   <div class="sidebar-backdrop" id="sidebarBackdrop" hidden></div>
+  <div class="sidebar-backdrop" id="moreMenuBackdrop" hidden></div>
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-head">
       <div class="sidebar-head-row">
@@ -76,8 +81,8 @@
         <button id="btnCloseSidebar" class="mobile-only" title="關閉">✕</button>
       </div>
       <div class="sidebar-actions">
-        <button id="btnExtract" disabled>取出所選</button>
-        <button id="btnDeleteSelected" disabled>刪除所選</button>
+        <button id="btnExtract" disabled>📤 取出所選</button>
+        <button id="btnDeleteSelected" disabled>🗑 刪除所選</button>
       </div>
     </div>
     <div class="thumb-list" id="thumbList"></div>

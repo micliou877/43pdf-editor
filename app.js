@@ -3752,10 +3752,29 @@ $("#btnHardRefresh").addEventListener("click", forceHardRefresh);
 function setSidebarOpen(open) {
   $("#sidebar").classList.toggle("open", open);
   $("#sidebarBackdrop").hidden = !open;
+  if (open) setMoreMenuOpen(false);
 }
 $("#btnToggleSidebar").addEventListener("click", () => setSidebarOpen(true));
 $("#btnCloseSidebar").addEventListener("click", () => setSidebarOpen(false));
 $("#sidebarBackdrop").addEventListener("click", () => setSidebarOpen(false));
+
+/* ====== 手機版：「更多功能」面板（次要的檔案操作／檢視模式／翻頁／偏好設定）======
+   從右邊滑出，跟左邊滑出的頁面縮圖抽屜對稱；兩個抽屜互斥，開一個會自動關掉另一個，
+   避免畫面上同時疊兩層背景遮罩。桌面版因為 #moreMenuPanel 是 display:contents，
+   這些 class 切換不會影響桌面版外觀（面板本身在桌面版的版面裡「不存在」）。 */
+function setMoreMenuOpen(open) {
+  $("#moreMenuPanel").classList.toggle("open", open);
+  $("#moreMenuBackdrop").hidden = !open;
+  if (open) setSidebarOpen(false);
+}
+$("#btnMoreMenu").addEventListener("click", () => setMoreMenuOpen(true));
+$("#btnCloseMoreMenu").addEventListener("click", () => setMoreMenuOpen(false));
+$("#moreMenuBackdrop").addEventListener("click", () => setMoreMenuOpen(false));
+// 這幾個是一次性動作（開啟彈窗或立刻切換），點了之後就把面板收起來，不用使用者自己關；
+// 檢視模式／翻頁按鈕刻意不收起來，不然連續翻頁還要一直重新打開面板
+["#btnAppend", "#btnBlankPage", "#btnToolLibrary", "#btnThemeToggle", "#btnHardRefresh"].forEach((sel) => {
+  $(sel).addEventListener("click", () => setMoreMenuOpen(false));
+});
 
 /* ====== 工具庫：把用不到的工具從工具列隱藏起來 ====== */
 // 「瀏覽」工具不列在這裡——它是基本的瀏覽／選取操作，藏起來會讓人卡住沒辦法選物件，
