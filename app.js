@@ -12,9 +12,12 @@ const CSS_SCALE = 1.0;      // 100% 縮放時，1 PDF point = 1 CSS px
 const BACKING_DPR = 1.5;    // 畫面用的實際像素密度（清晰度）
 // 頁面左右兩側多留一塊「暫放區」，可以把物件拖出頁面範圍外暫時擺放（例如表格內容被頁面
 // 邊緣裁掉時，先把備註文字放在旁邊）；這塊區域只存在於畫面上，匯出 PDF 時不會印出來。
-// 數值刻意留得很寬，蓋過一般視窗寬度下左右兩側看得到的灰色工作區，避免物件被拖到旁邊時
-// 一超出範圍就整個消失不見（實際上是畫到 overlay-canvas 的像素範圍之外，瀏覽器不會畫出來）。
-const PASTEBOARD_MARGIN = 2000;
+// 這個數值不能無限加大：頁面是用 flex 置中，暫放區是疊加在頁面兩側的 overlay-canvas，
+// 只有「往右」超出視窗的部分會被瀏覽器算進可捲動範圍、捲過去就看得到；「往左」超出視窗的
+// 部分，瀏覽器天生無法捲動到負值座標去看，捲到底（scrollLeft=0）就是極限，再寬也看不到、
+// 點不到，等於白白浪費、還會讓使用者以為「選取/拖曳往左過不去」。所以margin只抓一個在
+// 大多數視窗寬度下，不用捲動、兩側都能完整看到的寬度（太寬在小視窗一樣會卡到這個限制）。
+const PASTEBOARD_MARGIN = 500;
 const TEXT_PAD = 4;         // 文字物件背景／外框的內距（point）
 const ROTATE_HANDLE_DIST = 26; // 旋轉把手離物件上緣的距離（point）
 
@@ -1620,14 +1623,31 @@ function normalizeAngle(deg) {
   if (deg < 0) deg += 360;
   return deg;
 }
-// 多選時用的整體外框（涵蓋所有選取物件各自外框的聯集），忽略個別物件自己的旋轉角度
-// （群組縮放只處理位置／大小，不處理旋轉，簡化版本）
+// 把物件自己的局部（未旋轉）外框角點，轉回旋轉後實際顯示在畫面上的世界座標
+// （toLocalPoint 是世界→局部，这裡要反過來，所以用反向角度）
+function localCornerToWorld(obj, pt) {
+  const rotation = obj.type === "indexmark" ? 0 : obj.rotation || 0;
+  if (!rotation) return pt;
+  return rotatePointAround(pt, getCenter(obj), -rotation);
+}
+// 多選時用的整體外框（涵蓋所有選取物件「旋轉後」實際佔據範圍的聯集）：
+// 先取每個物件未旋轉外框的四個角點，各自轉回旋轉後的世界座標，再取全部角點的最外圍，
+// 這樣框起來的範圍才會跟畫面上看到的（已經轉過的）物件外觀一致，不會因為某個物件轉了
+// 角度，選取框跟實際物件對不上、看起來很奇怪。
 function getSelectionBBox(objs) {
-  const boxes = objs.map(getBBox);
-  const x0 = Math.min(...boxes.map((b) => b.x));
-  const y0 = Math.min(...boxes.map((b) => b.y));
-  const x1 = Math.max(...boxes.map((b) => b.x + b.w));
-  const y1 = Math.max(...boxes.map((b) => b.y + b.h));
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  objs.forEach((obj) => {
+    const b = getBBox(obj);
+    const corners = [
+      { x: b.x, y: b.y }, { x: b.x + b.w, y: b.y },
+      { x: b.x, y: b.y + b.h }, { x: b.x + b.w, y: b.y + b.h },
+    ];
+    corners.forEach((c) => {
+      const w = localCornerToWorld(obj, c);
+      x0 = Math.min(x0, w.x); y0 = Math.min(y0, w.y);
+      x1 = Math.max(x1, w.x); y1 = Math.max(y1, w.y);
+    });
+  });
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 function bboxIntersects(a, b) {
@@ -1842,7 +1862,7 @@ function startPanInteraction(entry, pt, e) {
     if (isOnResizeHandle(obj, pt)) {
       state.interaction = {
         mode: "resize", entry, obj, start: pt, orig: cloneObj(obj),
-        resizeCenter: getCenter(obj), historyPushed: false,
+        historyPushed: false,
       };
       return;
     }
@@ -2090,7 +2110,7 @@ function updateInteraction(pt, e) {
       pushHistory(it.entry);
       it.historyPushed = true;
     }
-    applyResize(it.obj, it.orig, pt, it.resizeCenter, ctrl);
+    applyResize(it.obj, it.orig, pt, ctrl);
   } else if (it.mode === "groupResize") {
     const dx = pt.x - it.start.x, dy = pt.y - it.start.y;
     if (!it.historyPushed && (Math.abs(dx) > 0.3 || Math.abs(dy) > 0.3)) {
@@ -2207,7 +2227,11 @@ function applyMove(obj, orig, dx, dy) {
   }
 }
 
-function applyResize(obj, orig, pt, center, ctrl) {
+function applyResize(obj, orig, pt, ctrl) {
+  // 旋轉中心要用「目前」的中心即時算，不能用拖曳開始那一刻的舊值：縮放把手拖曳中 w/h 會
+  // 一直變化，物件的中心點也跟著一直變化，畫面上旋轉時實際用的錨點就是這個會變動的中心；
+  // 如果拿拖曳開始時的舊中心點去反轉滑鼠座標，隨著w/h改變只會越轉越偏，基準點就跑掉了。
+  const center = getCenter(obj);
   // 索引符號的外框不隨旋轉變化，縮放要用原始座標，不能先轉回局部座標（見 toLocalPointForBBox 的說明）
   const lp = obj.type === "indexmark" ? pt : rotatePointAround(pt, center, obj.rotation || 0);
   if (obj.type === "text") {
@@ -2307,6 +2331,13 @@ function openObjectTextEditor(entry, obj, opts) {
   editor.style.minWidth = "0";
   editor.style.minHeight = "0";
   editor.style.border = "none";
+  // 量測／最終畫出來的文字框（measureTextBoxPt／drawTextObject）只在明確的 \n 才換行，
+  // 完全不做自動換行；這裡的即時編輯框如果用textarea預設的自動換行，寬度每次都是依「這次打完
+  // 的文字」量出來剛好貼合、沒有多餘空間，新打一個字時瀏覽器會先用舊寬度自動換成兩行，
+  // 下一拍 syncEditorSize 才又依新文字量出夠寬的單行寬度、把它折回一行——框框寬高就會一直
+  // 跳動／閃爍，甚至因為行數瞬間變化看起來像在移動。改成 pre，讓文字只在打 Enter 時才換行，
+  // 跟量測函式的假設完全一致，就不會有這種寬高打架的情況。
+  editor.style.whiteSpace = "pre";
   // 縮放很小時字級會被下限頂住（下面用 Math.max(10,...)，避免小到打字看不到），這時字級
   // 「實際放大的比例」已經不等於 state.zoom 了。框框的寬高如果還是用 state.zoom 去算，
   // 就會比實際文字還窄，造成文字被擠到一行只能放一個字、框框變成一直條——這裡統一改用
