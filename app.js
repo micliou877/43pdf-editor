@@ -928,9 +928,20 @@ $("#btnExtract").addEventListener("click", async () => {
 $("#btnZoomIn").addEventListener("click", () => changeZoom(0.15));
 $("#btnZoomOut").addEventListener("click", () => changeZoom(-0.15));
 
-async function setZoom(next) {
+// 雙指縮放手勢會在很短時間內連續觸發很多次（每個畫面更新週期一次），如果上一次的
+// setZoom 還在跑（renderPage 要等 PDF.js 重繪，不是立即完成），不能再疊一次重複執行，
+// 不然好幾個縮放同時重畫同一批 canvas，畫面會亂跳、loading 遮罩也會閃爍。這裡用「尾端
+// 節流」：忙碌中新進來的縮放要求只記住最新那個目標值，等目前這次跑完才接著處理。
+let zoomRunning = false;
+let zoomQueued = null;
+async function setZoom(next, opts) {
   next = Math.min(3, Math.max(0.3, Math.round(next * 100) / 100));
   if (next === state.zoom) return;
+  if (zoomRunning) {
+    zoomQueued = { next, opts };
+    return;
+  }
+  zoomRunning = true;
   state.zoom = next;
   updateZoomLabel();
   showLoading("調整縮放中…");
@@ -939,12 +950,23 @@ async function setZoom(next) {
       await renderPage(entry, state.zoom);
       layoutPage(entry);
     }
-    centerViewerHorizontally();
-    // 單頁模式下畫面永遠只會有「目前這一頁」一個 row，跟一般連續捲動模式不同，不會有
-    // 「使用者原本捲到文件中間，結果被縮放硬拉回正中間」的問題，所以可以放心直向也置中。
-    if (state.viewMode === "single") centerViewerVertically();
+    // 手機雙指縮放時使用者同時也在用兩指拖曳平移畫面，這裡如果還主動置中，會跟使用者
+    // 手指正在帶動的捲動位置打架、畫面一直被拉回正中間；所以雙指縮放手勢呼叫這裡時
+    // 會傳 { recenter: false } 跳過置中，置中交給使用者自己的兩指拖曳手勢決定。
+    if (!opts || opts.recenter !== false) {
+      centerViewerHorizontally();
+      // 單頁模式下畫面永遠只會有「目前這一頁」一個 row，跟一般連續捲動模式不同，不會有
+      // 「使用者原本捲到文件中間，結果被縮放硬拉回正中間」的問題，所以可以放心直向也置中。
+      if (state.viewMode === "single") centerViewerVertically();
+    }
   } finally {
     hideLoading();
+    zoomRunning = false;
+    if (zoomQueued) {
+      const q = zoomQueued;
+      zoomQueued = null;
+      setZoom(q.next, q.opts);
+    }
   }
 }
 async function changeZoom(delta) {
@@ -1002,6 +1024,79 @@ viewer.addEventListener(
     }
   },
   { passive: false }
+);
+
+/* ---------------- 手機雙指縮放／雙指拖曳瀏覽 ----------------
+   單指要留給畫筆／螢光筆／選取移動物件等既有編輯操作用，所以頁面本身的縮放、上下左右
+   瀏覽都改成一定要用兩指：兩指開合＝縮放，兩指拖曳＝平移；單指在頁面上不管怎麼滑都不會
+   讓畫面移動（固定），只會觸發原本的編輯工具行為。對應地，overlay-canvas 原本「瀏覽工具
+   時用 pan-y 讓單指原生捲動」的設定也拿掉了（見 setTool() 跟 attachPageInteractions()），
+   一律 touch-action:none，捲動／縮放全部交給這裡的 JS 自己處理。 */
+function touchDist(t0, t1) {
+  return Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+}
+function touchMid(t0, t1) {
+  return { x: (t0.clientX + t1.clientX) / 2, y: (t0.clientY + t1.clientY) / 2 };
+}
+let twoFingerGesture = null;
+// 目前螢幕上同時有幾根手指。canvas 的 pointerdown 要靠這個判斷「現在是不是已經有兩指在
+// 進行縮放／平移手勢了，不要再多開一個單指畫圖／選取的互動」（見 attachPageInteractions()）。
+// touchstart 會比對應那根手指的 pointerdown 先觸發，所以在這裡更新一定來得及。
+let activeTouchCount = 0;
+let pinchZoomPending = null;
+let pinchZoomScheduled = false;
+function schedulePinchZoom(z) {
+  pinchZoomPending = z;
+  if (!pinchZoomScheduled) {
+    pinchZoomScheduled = true;
+    requestAnimationFrame(() => {
+      const z2 = pinchZoomPending;
+      pinchZoomScheduled = false;
+      if (z2 != null) setZoom(z2, { recenter: false });
+    });
+  }
+}
+viewer.addEventListener(
+  "touchstart",
+  (e) => {
+    activeTouchCount = e.touches.length;
+    if (e.touches.length !== 2 || !state.pages.length) return;
+    e.preventDefault();
+    // 兩指手勢一開始，取消任何正在進行中的單指操作（例如不小心先碰到畫筆畫了一點點），
+    // 避免兩指縮放／平移跟單指畫圖同時進行、狀態互相打架
+    if (state.interaction) finishInteraction();
+    const mid = touchMid(e.touches[0], e.touches[1]);
+    twoFingerGesture = {
+      startDist: touchDist(e.touches[0], e.touches[1]),
+      startZoom: state.zoom,
+      lastMidX: mid.x,
+      lastMidY: mid.y,
+    };
+  },
+  { passive: false }
+);
+viewer.addEventListener(
+  "touchmove",
+  (e) => {
+    if (!twoFingerGesture || e.touches.length !== 2) return;
+    e.preventDefault();
+    const mid = touchMid(e.touches[0], e.touches[1]);
+    // 平移：兩指中點移動多少，畫面就反方向捲動多少，手感跟直接拖著內容走一致
+    viewerScroll.scrollLeft -= mid.x - twoFingerGesture.lastMidX;
+    viewerScroll.scrollTop -= mid.y - twoFingerGesture.lastMidY;
+    twoFingerGesture.lastMidX = mid.x;
+    twoFingerGesture.lastMidY = mid.y;
+    // 縮放：跟兩指「這次手勢一開始」的間距比較出比例，套在手勢開始當下的縮放值上
+    const dist = touchDist(e.touches[0], e.touches[1]);
+    schedulePinchZoom(twoFingerGesture.startZoom * (dist / twoFingerGesture.startDist));
+  },
+  { passive: false }
+);
+["touchend", "touchcancel"].forEach((ev) =>
+  viewer.addEventListener(ev, (e) => {
+    activeTouchCount = e.touches.length;
+    if (e.touches.length < 2) twoFingerGesture = null;
+  })
 );
 
 // 避免 Ctrl+滾輪／觸控板兩指縮放把「整個網頁」放大，而不是只放大 PDF 頁面：上面那個
@@ -1134,7 +1229,9 @@ function setTool(tool) {
   state.pages.forEach((p) => {
     p.textLayerEl.classList.toggle("edit-mode", tool === "edittext");
     p.overlayCanvasEl.style.pointerEvents = tool === "edittext" ? "none" : "auto";
-    p.overlayCanvasEl.style.touchAction = tool === "pan" ? "pan-y" : "none";
+    // 一律 touch-action:none：頁面的捲動／縮放固定交給兩指手勢處理（見上面「手機雙指
+    // 縮放／雙指拖曳瀏覽」），單指不管哪個工具都不觸發瀏覽器原生的單指捲動。
+    p.overlayCanvasEl.style.touchAction = "none";
     redraw(p);
   });
   renderToolOptions();
@@ -1890,12 +1987,15 @@ function eventToPoint(entry, e) {
 
 function attachPageInteractions(entry) {
   const canvas = entry.overlayCanvasEl;
-  // 「瀏覽」工具時允許手機原生垂直滑動（touch-action:none 預設會整個擋掉觸控手勢，
-  // 讓手機只能用側邊欄按鈕翻頁、完全沒辦法用手指滑動看文件），其他會在畫布上畫東西
-  // 的工具（畫筆／螢光筆／圖形／裁切）才需要完全攔截手勢，避免畫到一半被當成滑動取消
-  canvas.style.touchAction = state.tool === "pan" ? "pan-y" : "none";
+  // 一律 touch-action:none：單指保留給選取／移動物件／畫筆等既有編輯操作，頁面本身的
+  // 捲動／縮放固定交給兩指手勢處理（見「手機雙指縮放／雙指拖曳瀏覽」），避免單指滑動
+  // 被瀏覽器當成原生捲動手勢，跟編輯動作衝突。
+  canvas.style.touchAction = "none";
 
   canvas.addEventListener("pointerdown", (e) => {
+    // 已經有兩根手指在做縮放／平移手勢時，不要讓其中一根手指同時又另外開一個單指畫圖／
+    // 選取物件的互動，不然兩套狀態會同時搶著動同一個物件、畫面亂跳。
+    if (e.pointerType === "touch" && activeTouchCount >= 2) return;
     lastPointerIsTouch = e.pointerType === "touch";
     if (state.currentTextEditor) closeTextEditor(true);
     if (state.tool === "edittext" || state.tool === "text") return;

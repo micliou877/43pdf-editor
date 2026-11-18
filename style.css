@@ -225,7 +225,12 @@ button.tool-btn[hidden] { display: none; }
 .thumb-context-menu button:hover { background: var(--context-hover-bg); }
 
 .viewer { flex: 1; position: relative; overflow: hidden; background: var(--bg); }
-.viewer-scroll { position: absolute; inset: 0; overflow: auto; padding: 24px; display: flex; flex-direction: column; align-items: safe center; gap: 20px; }
+.viewer-scroll {
+  position: absolute; inset: 0; overflow: auto; padding: 24px; display: flex; flex-direction: column;
+  align-items: safe center; gap: 20px; touch-action: none;
+}
+/* touch-action:none 讓手機上的捲動／縮放固定交給 app.js 的兩指手勢處理（單指保留給畫筆／
+   選取移動物件等編輯操作），連空白的留白區域（不是頁面本身）也不例外，體驗才會一致。 */
 /* page-row 是頁面外層再包一層的置中容器，寬高都包含上下左右的暫放區（見 app.js 的
    PASTEBOARD_MARGIN／layoutPage()），這樣瀏覽器才會把暫放區算進可捲動範圍——否則「往左／
    往上」超出視窗的暫放區，瀏覽器天生無法捲過去看。align-items 要搭配 safe 關鍵字，不然這個
