@@ -804,7 +804,7 @@ function showConfirm(message) {
     backdrop.innerHTML = `
       <div class="modal">
         <h3>請確認</h3>
-        <p style="margin:0;color:#c9cdd6;font-size:14px;">${message}</p>
+        <p style="margin:0;color:var(--label-d);font-size:14px;">${message}</p>
         <div class="modal-actions">
           <button data-act="cancel">取消</button>
           <button data-act="ok" class="primary">確定</button>
@@ -2944,18 +2944,18 @@ function addDeleteButton(container) {
 
 function buildMultiObjectPanel(objs, entry) {
   const info = document.createElement("span");
-  info.style.cssText = "font-size:13px;color:#c9cdd6;";
+  info.style.cssText = "font-size:13px;color:var(--label-b);";
   info.textContent = `已選取 ${objs.length} 個物件`;
   toolOptionsEl.appendChild(info);
   const lockedCount = objs.filter((o) => o.locked).length;
   if (lockedCount) {
     const lockedHint = document.createElement("span");
-    lockedHint.style.cssText = "font-size:12px;color:#9aa0ab;";
+    lockedHint.style.cssText = "font-size:12px;color:var(--label-c);";
     lockedHint.textContent = `其中 ${lockedCount} 個已鎖定，不會被移動／縮放／刪除`;
     toolOptionsEl.appendChild(lockedHint);
   }
   const hint = document.createElement("span");
-  hint.style.cssText = "font-size:12px;color:#9aa0ab;";
+  hint.style.cssText = "font-size:12px;color:var(--label-c);";
   hint.textContent = "拖曳其中一個可整批移動；拖右下角把手可整批縮放（按住 Ctrl 鎖定原本的長寬比例）";
   toolOptionsEl.appendChild(hint);
 
@@ -3051,7 +3051,7 @@ function buildShapeDefaultsPanel(d) {
   addColorInput(toolOptionsEl, "文字顏色", d.textColor, (v) => (d.textColor = v));
   addRangeInput(toolOptionsEl, "文字大小", d.fontSize, 8, 120, (v) => (d.fontSize = v));
   const hint = document.createElement("span");
-  hint.style.cssText = "font-size:12px;color:#9aa0ab;";
+  hint.style.cssText = "font-size:12px;color:var(--label-c);";
   hint.textContent = "雙擊圖形可在中間打字";
   toolOptionsEl.appendChild(hint);
 }
@@ -3070,7 +3070,7 @@ function buildIndexMarkDefaultsPanel(d) {
   addColorInput(toolOptionsEl, "文字顏色", d.textColor, (v) => (d.textColor = v));
   addRangeInput(toolOptionsEl, "文字大小", d.fontSize, 8, 80, (v) => (d.fontSize = v));
   const hint = document.createElement("span");
-  hint.style.cssText = "font-size:12px;color:#9aa0ab;";
+  hint.style.cssText = "font-size:12px;color:var(--label-c);";
   hint.textContent = "拖曳新增後雙擊可輸入文字；拖旋轉把手只會轉三角指標，文字不會跟著轉";
   toolOptionsEl.appendChild(hint);
 }
@@ -3086,11 +3086,11 @@ function buildStampDefaultsPanel(d) {
   if (d.dataUrl) {
     const preview = document.createElement("img");
     preview.src = d.dataUrl;
-    preview.style.cssText = "max-width:36px;max-height:36px;border:1px solid #2e323c;border-radius:4px;vertical-align:middle;";
+    preview.style.cssText = "max-width:36px;max-height:36px;border:1px solid var(--chip-border);border-radius:4px;vertical-align:middle;";
     toolOptionsEl.appendChild(preview);
     addRangeInput(toolOptionsEl, "印章大小", d.targetW, 20, 400, (v) => (d.targetW = v));
     const hint = document.createElement("span");
-    hint.style.cssText = "font-size:12px;color:#9aa0ab;";
+    hint.style.cssText = "font-size:12px;color:var(--label-c);";
     hint.textContent = "點頁面即可蓋章";
     toolOptionsEl.appendChild(hint);
   }
@@ -3098,7 +3098,7 @@ function buildStampDefaultsPanel(d) {
 
 function buildCropOptionsPanel() {
   const hint = document.createElement("span");
-  hint.style.cssText = "font-size:12px;color:#9aa0ab;";
+  hint.style.cssText = "font-size:12px;color:var(--label-c);";
   hint.textContent = "拖曳框選範圍（可超出頁面邊緣，靠近原始頁面邊界會自動吸附）；放開後可拖曳四邊／四角的把手微調範圍，雙擊頁面套用裁切";
   toolOptionsEl.appendChild(hint);
   const cancelBtn = document.createElement("button");
@@ -3129,7 +3129,7 @@ function buildObjectPanel(obj, entry) {
   });
   if (obj.locked) {
     const hint = document.createElement("span");
-    hint.style.cssText = "font-size:12px;color:#9aa0ab;";
+    hint.style.cssText = "font-size:12px;color:var(--label-c);";
     hint.textContent = "已鎖定：無法移動／縮放／旋轉／刪除／編輯，取消勾選即可恢復";
     toolOptionsEl.appendChild(hint);
     return;
@@ -3583,3 +3583,87 @@ window.addEventListener("beforeunload", (e) => {
 })();
 
 renderToolOptions();
+
+/* ====== 暗黑模式／一般模式（白底）切換 ====== */
+// 套用主題時機分兩段：<head>裡的inline script在CSS解析前就先依localStorage設好
+// data-theme屬性（避免切換瞬間畫面先閃一下舊主題再變成新主題），這裡只負責切換鈕
+// 文字同步、以及使用者按下按鈕時的即時切換+記住選擇。
+const THEME_KEY = "pdf_editor_theme";
+function getTheme() {
+  try { return localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark"; } catch (e) { return "dark"; }
+}
+function applyTheme(theme) {
+  if (theme === "light") document.documentElement.setAttribute("data-theme", "light");
+  else document.documentElement.removeAttribute("data-theme");
+  const btn = $("#btnThemeToggle");
+  if (btn) btn.textContent = theme === "light" ? "🌙 暗黑模式" : "☀️ 一般模式";
+}
+applyTheme(getTheme());
+$("#btnThemeToggle").addEventListener("click", () => {
+  const next = getTheme() === "light" ? "dark" : "light";
+  try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+  applyTheme(next);
+});
+
+/* ====== 工具庫：把用不到的工具從工具列隱藏起來 ====== */
+// 「瀏覽」工具不列在這裡——它是基本的瀏覽／選取操作，藏起來會讓人卡住沒辦法選物件，
+// 所以固定顯示，不開放隱藏。
+const TOOL_LIBRARY_DEFS = [
+  { tool: "text", label: "🔤 新增文字" },
+  { tool: "highlight", label: "🖍 螢光筆" },
+  { tool: "pen", label: "✍️ 畫筆" },
+  { tool: "shape", label: "⬛ 圖形" },
+  { tool: "stamp", label: "🖼 蓋章" },
+  { tool: "edittext", label: "✏️ 編輯文字" },
+  { tool: "watermark", label: "💧 浮水印" },
+  { tool: "crop", label: "✂ 裁切頁面" },
+  { tool: "pagenum", label: "🔢 頁碼" },
+];
+const HIDDEN_TOOLS_KEY = "pdf_editor_hidden_tools";
+function loadHiddenTools() {
+  try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_TOOLS_KEY) || "[]")); } catch (e) { return new Set(); }
+}
+function saveHiddenTools(set) {
+  try { localStorage.setItem(HIDDEN_TOOLS_KEY, JSON.stringify([...set])); } catch (e) {}
+}
+let hiddenTools = loadHiddenTools();
+
+function applyToolVisibility() {
+  TOOL_LIBRARY_DEFS.forEach(({ tool }) => {
+    const btn = document.querySelector(`.tool-btn[data-tool="${tool}"]`);
+    if (btn) btn.hidden = hiddenTools.has(tool);
+  });
+  // 如果正在用的工具被藏起來了，切回瀏覽工具，避免卡在一個按鈕點不到的工具上
+  if (hiddenTools.has(state.tool)) setTool("pan");
+}
+
+function renderToolLibraryList() {
+  const wrap = $("#toolLibraryList");
+  wrap.innerHTML = TOOL_LIBRARY_DEFS.map(({ tool, label }) => `
+    <label class="checkbox">
+      <input type="checkbox" data-tool-lib="${tool}" ${hiddenTools.has(tool) ? "" : "checked"}>
+      ${label}
+    </label>`).join("");
+  wrap.querySelectorAll("input[data-tool-lib]").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const tool = cb.dataset.toolLib;
+      if (cb.checked) hiddenTools.delete(tool);
+      else hiddenTools.add(tool);
+      saveHiddenTools(hiddenTools);
+      applyToolVisibility();
+    });
+  });
+}
+
+applyToolVisibility();
+$("#btnToolLibrary").addEventListener("click", () => {
+  renderToolLibraryList();
+  $("#toolLibraryModal").hidden = false;
+});
+$("#tlClose").addEventListener("click", () => { $("#toolLibraryModal").hidden = true; });
+$("#tlSelectAll").addEventListener("click", () => {
+  hiddenTools.clear();
+  saveHiddenTools(hiddenTools);
+  applyToolVisibility();
+  renderToolLibraryList();
+});
