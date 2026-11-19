@@ -942,6 +942,18 @@ async function setZoom(next, opts) {
     return;
   }
   zoomRunning = true;
+  const oldZoom = state.zoom;
+  // 如果有指定 anchor（兩指縮放的手指中點，螢幕座標），先記下這個點目前對應到
+  // viewerScroll 捲動內容裡的哪個位置，縮放完、頁面尺寸改變之後，再把捲動位置
+  // 反推回去，讓這個點縮放前後都還是停在同一個螢幕位置——體感上就是「以兩指中心為準縮放」。
+  let anchorScrollLeftBefore, anchorScrollTopBefore, anchorScreenX, anchorScreenY;
+  if (opts && opts.anchor) {
+    const viewportRect = viewerScroll.getBoundingClientRect();
+    anchorScrollLeftBefore = viewerScroll.scrollLeft;
+    anchorScrollTopBefore = viewerScroll.scrollTop;
+    anchorScreenX = opts.anchor.x - viewportRect.left;
+    anchorScreenY = opts.anchor.y - viewportRect.top;
+  }
   state.zoom = next;
   updateZoomLabel();
   showLoading("調整縮放中…");
@@ -950,10 +962,17 @@ async function setZoom(next, opts) {
       await renderPage(entry, state.zoom);
       layoutPage(entry);
     }
-    // 手機雙指縮放時使用者同時也在用兩指拖曳平移畫面，這裡如果還主動置中，會跟使用者
-    // 手指正在帶動的捲動位置打架、畫面一直被拉回正中間；所以雙指縮放手勢呼叫這裡時
-    // 會傳 { recenter: false } 跳過置中，置中交給使用者自己的兩指拖曳手勢決定。
-    if (!opts || opts.recenter !== false) {
+    if (opts && opts.anchor) {
+      // 用「加上縮放造成的差額」而不是直接設成算好的絕對值：renderPage 要等 PDF.js
+      // 重繪，這段 await 期間使用者的兩指平移（上面 touchmove 直接調整 scrollLeft/Top
+      // 那段）可能還在繼續跑，用相加的才不會把這段期間使用者手指帶動的捲動蓋掉、產生頓挫感。
+      const r = next / oldZoom;
+      viewerScroll.scrollLeft += (anchorScrollLeftBefore + anchorScreenX) * (r - 1);
+      viewerScroll.scrollTop += (anchorScrollTopBefore + anchorScreenY) * (r - 1);
+    } else if (!opts || opts.recenter !== false) {
+      // 手機雙指縮放手勢沒有指定 anchor 時（理論上不會發生，保留當 fallback），或滑鼠／
+      // 按鈕縮放時，才用「整個置中」這個比較粗略的方式；兩指縮放手勢一律會帶 anchor，
+      // 不會跟使用者手指正在帶動的捲動位置打架、畫面被硬拉回正中間。
       centerViewerHorizontally();
       // 單頁模式下畫面永遠只會有「目前這一頁」一個 row，跟一般連續捲動模式不同，不會有
       // 「使用者原本捲到文件中間，結果被縮放硬拉回正中間」的問題，所以可以放心直向也置中。
@@ -1045,14 +1064,14 @@ let twoFingerGesture = null;
 let activeTouchCount = 0;
 let pinchZoomPending = null;
 let pinchZoomScheduled = false;
-function schedulePinchZoom(z) {
-  pinchZoomPending = z;
+function schedulePinchZoom(z, mid) {
+  pinchZoomPending = { z, mid };
   if (!pinchZoomScheduled) {
     pinchZoomScheduled = true;
     requestAnimationFrame(() => {
-      const z2 = pinchZoomPending;
+      const pending = pinchZoomPending;
       pinchZoomScheduled = false;
-      if (z2 != null) setZoom(z2, { recenter: false });
+      if (pending != null) setZoom(pending.z, { recenter: false, anchor: pending.mid });
     });
   }
 }
@@ -1086,9 +1105,10 @@ viewer.addEventListener(
     viewerScroll.scrollTop -= mid.y - twoFingerGesture.lastMidY;
     twoFingerGesture.lastMidX = mid.x;
     twoFingerGesture.lastMidY = mid.y;
-    // 縮放：跟兩指「這次手勢一開始」的間距比較出比例，套在手勢開始當下的縮放值上
+    // 縮放：跟兩指「這次手勢一開始」的間距比較出比例，套在手勢開始當下的縮放值上；
+    // 用目前這個當下的兩指中點當 anchor，讓縮放基準點跟著手指即時的中心點走
     const dist = touchDist(e.touches[0], e.touches[1]);
-    schedulePinchZoom(twoFingerGesture.startZoom * (dist / twoFingerGesture.startDist));
+    schedulePinchZoom(twoFingerGesture.startZoom * (dist / twoFingerGesture.startDist), mid);
   },
   { passive: false }
 );
