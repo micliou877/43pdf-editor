@@ -956,7 +956,8 @@ async function setZoom(next, opts) {
   }
   state.zoom = next;
   updateZoomLabel();
-  showLoading("調整縮放中…");
+  // 縮放（尤其滑鼠滾輪／雙指手勢）動作很頻繁，每次都跳出載入遮罩會一直閃爍、很煩，
+  // 所以縮放不顯示載入中——這個流程本來就快，不需要遮罩擋互動。
   try {
     for (const entry of state.pages) {
       await renderPage(entry, state.zoom);
@@ -979,7 +980,6 @@ async function setZoom(next, opts) {
       if (state.viewMode === "single") centerViewerVertically();
     }
   } finally {
-    hideLoading();
     zoomRunning = false;
     if (zoomQueued) {
       const q = zoomQueued;
@@ -988,8 +988,8 @@ async function setZoom(next, opts) {
     }
   }
 }
-async function changeZoom(delta) {
-  await setZoom(state.zoom + delta);
+async function changeZoom(delta, opts) {
+  await setZoom(state.zoom + delta, opts);
 }
 function updateZoomLabel() {
   $("#zoomLabel").textContent = Math.round(state.zoom * 100) + "%";
@@ -1024,7 +1024,11 @@ async function fitCurrentPageToViewer() {
 // 按住 Ctrl 滾滾輪可以縮放（觸控板兩指縮放手勢瀏覽器也會視為 ctrlKey+wheel，一併支援）。
 // 用 requestAnimationFrame 把同一個畫面更新週期內的多次 wheel 事件合併成一次縮放，
 // 避免連續滾動時每個事件都重新渲染全部頁面造成卡頓。
+// 滑鼠游標位置當 anchor，縮放基準點跟著滑鼠走（道理跟手機雙指縮放的 anchor 一樣，
+// 見 setZoom() 的 opts.anchor），游標指著哪裡，縮放前後那裡的內容都停在原地不會跑掉。
 let wheelZoomPending = 0;
+let wheelZoomX = 0;
+let wheelZoomY = 0;
 let wheelZoomScheduled = false;
 viewer.addEventListener(
   "wheel",
@@ -1032,13 +1036,15 @@ viewer.addEventListener(
     if (!e.ctrlKey || !state.pages.length) return;
     e.preventDefault();
     wheelZoomPending += -e.deltaY * 0.002;
+    wheelZoomX = e.clientX;
+    wheelZoomY = e.clientY;
     if (!wheelZoomScheduled) {
       wheelZoomScheduled = true;
       requestAnimationFrame(() => {
         const delta = Math.max(-0.3, Math.min(0.3, wheelZoomPending));
         wheelZoomPending = 0;
         wheelZoomScheduled = false;
-        changeZoom(delta);
+        changeZoom(delta, { anchor: { x: wheelZoomX, y: wheelZoomY } });
       });
     }
   },
