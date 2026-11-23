@@ -2505,6 +2505,40 @@ function computeResizeSnap(entry, obj, x1, y1) {
   return { x1: outX1, y1: outY1, guides };
 }
 
+// 按住 Ctrl 鎖定長寬比例時的縮放吸附：x、y 兩軸不是獨立的（寬高比固定住了，只有一個自由度），
+// 不能像上面 computeResizeSnap 那樣兩軸各自吸附，不然吸完比例就跑掉了。做法是：x 邊緣候選
+// 跟 y 邊緣候選都先各自算出「吸上去之後、依比例換算回來的另一邊」，兩邊都在容許誤差內的話，
+// 取誤差最小的那一個當作唯一的吸附結果（只會動一條輔助線），確保吸附之後比例仍然精確。
+function computeResizeSnapRatioLocked(entry, obj, x1, y1, ratio) {
+  const tol = OBJECT_SNAP_DIST / state.zoom;
+  let best = null;
+  for (const other of entry.objects) {
+    if (other === obj || other._editing) continue;
+    const ob = getBBox(other);
+    const ox0 = ob.x, oy0 = ob.y, ox1 = ob.x + ob.w, oy1 = ob.y + ob.h;
+    const targetXs = [ox0, (ox0 + ox1) / 2, ox1];
+    const targetYs = [oy0, (oy0 + oy1) / 2, oy1];
+    for (const tx of targetXs) {
+      const diff = tx - x1;
+      if (Math.abs(diff) <= tol && (!best || Math.abs(diff) < Math.abs(best.diff))) {
+        const nw = tx - obj.x;
+        const ny1 = obj.y + nw * ratio;
+        best = { diff, x1: tx, y1: ny1, guide: { axis: "v", x: tx, y0: Math.min(oy0, ny1), y1: Math.max(oy1, ny1) } };
+      }
+    }
+    for (const ty of targetYs) {
+      const diff = ty - y1;
+      if (Math.abs(diff) <= tol && (!best || Math.abs(diff) < Math.abs(best.diff))) {
+        const nh = ty - obj.y;
+        const nx1 = obj.x + (ratio ? nh / ratio : 0);
+        best = { diff, x1: nx1, y1: ty, guide: { axis: "h", y: ty, x0: Math.min(ox0, nx1), x1: Math.max(ox1, nx1) } };
+      }
+    }
+  }
+  if (!best) return { x1, y1, guides: [] };
+  return { x1: best.x1, y1: best.y1, guides: [best.guide] };
+}
+
 // 吸附輔助線：畫在 overlay canvas 上的洋紅色虛線，跟框選預覽框（drawMarqueePreview）用同一套
 // 座標換算（要加回 PASTEBOARD_MARGIN，因為暫放區的物件也要能正常吸附、畫出輔助線）。
 function drawSnapGuidesPreview(entry, guides) {
@@ -2708,18 +2742,24 @@ function applyResize(obj, orig, pt, ctrl, entry) {
     // Math.min/abs 把左上角跟右下角互換，看起來就像基準點突然跳到對角去。
     let x1 = lp.x, y1 = lp.y;
     const ratioLocked = ctrl && obj.type === "image" && orig.w;
-    // 按住 Ctrl 鎖定圖片長寬比例時，右下角已經不是自由移動，不套用吸附，不然兩邊互搶會讓
-    // 框一直抖動；其他情況才讓右下角去吸附同頁其他物件的邊緣／中心。
-    if (!ratioLocked && entry) {
-      const snap = computeResizeSnap(entry, obj, x1, y1);
-      x1 = snap.x1;
-      y1 = snap.y1;
-      guides = snap.guides;
+    if (entry) {
+      if (ratioLocked) {
+        // 鎖定比例時 x、y 不是獨立的兩軸，用專門的函式吸附（吸附後仍維持比例精確）
+        const snap = computeResizeSnapRatioLocked(entry, obj, x1, y1, orig.h / orig.w);
+        x1 = snap.x1;
+        y1 = snap.y1;
+        guides = snap.guides;
+      } else {
+        const snap = computeResizeSnap(entry, obj, x1, y1);
+        x1 = snap.x1;
+        y1 = snap.y1;
+        guides = snap.guides;
+      }
     }
     let w = Math.max(RESIZE_MIN_SIZE, x1 - obj.x);
     let h = Math.max(RESIZE_MIN_SIZE, y1 - obj.y);
     if (ratioLocked) {
-      h = w * (orig.h / orig.w); // 按住 Ctrl：維持圖片原本的長寬比例
+      h = w * (orig.h / orig.w); // 按住 Ctrl：維持圖片原本的長寬比例（用鉗制過的 w 重算一次，避免最小尺寸鉗制把比例帶偏）
     }
     obj.w = w;
     obj.h = h;
