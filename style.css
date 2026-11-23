@@ -286,6 +286,27 @@ button.tool-btn[hidden] { display: none; }
 .crop-handle-n, .crop-handle-s { cursor: ns-resize; }
 .crop-handle-e, .crop-handle-w { cursor: ew-resize; }
 
+/* 圖片物件裁切彈窗：跟上面頁面裁切框是同一種概念，但畫在彈窗裡的 <img> 上，所以另外取一組 class 名稱，避免互相影響 */
+#imageCropModal .modal { width: min(640px, 94vw); }
+.img-crop-stage {
+  position: relative; width: fit-content; max-width: 100%; align-self: center; overflow: hidden;
+  background: #2b2b2b; touch-action: none; line-height: 0;
+}
+.img-crop-stage img { display: block; max-width: 100%; max-height: min(480px, 60vh); user-select: none; -webkit-user-drag: none; }
+.img-crop-box {
+  position: absolute; z-index: 5; border: 2px dashed #16a34a; cursor: move; touch-action: none;
+  box-shadow: 0 0 0 2000px rgba(0,0,0,.45);
+}
+.img-crop-handle {
+  position: absolute; z-index: 6; width: 14px; height: 14px; margin: -7px;
+  background: #16a34a; border: 2px solid #fff; border-radius: 3px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.4); touch-action: none;
+}
+.img-crop-handle-nw, .img-crop-handle-se { cursor: nwse-resize; }
+.img-crop-handle-ne, .img-crop-handle-sw { cursor: nesw-resize; }
+.img-crop-handle-n, .img-crop-handle-s { cursor: ns-resize; }
+.img-crop-handle-e, .img-crop-handle-w { cursor: ew-resize; }
+
 .inline-editor {
   position: absolute; z-index: 10; min-width: 60px; min-height: 20px;
   border: 2px solid var(--accent-soft); background: rgba(255,255,255,.96); resize: both;

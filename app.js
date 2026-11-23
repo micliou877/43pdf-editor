@@ -1473,7 +1473,13 @@ function drawImageObject(ctx, obj, scale, entry) {
     return;
   }
   if (!obj._img.complete || !obj._img.naturalWidth) return;
-  ctx.drawImage(obj._img, obj.x * scale, obj.y * scale, obj.w * scale, obj.h * scale);
+  const crop = obj.crop || { x: 0, y: 0, w: 1, h: 1 };
+  const natW = obj._img.naturalWidth, natH = obj._img.naturalHeight;
+  ctx.drawImage(
+    obj._img,
+    crop.x * natW, crop.y * natH, crop.w * natW, crop.h * natH,
+    obj.x * scale, obj.y * scale, obj.w * scale, obj.h * scale
+  );
   if (obj.border && obj.border.enabled) {
     ctx.save();
     ctx.strokeStyle = obj.border.color;
@@ -2461,6 +2467,44 @@ function computeMoveSnap(it, dx, dy, axisLockX, axisLockY) {
   return { dx: outDx, dy: outDy, guides };
 }
 
+// 縮放單一物件時（左上角固定、右下角把手拖曳），看右下角目前的候選位置 (x1,y1) 靠不靠近
+// 「同頁其他物件」的邊緣／中心，在容許誤差內就吸附上去，並回傳要畫的輔助線。跟 computeMoveSnap
+// 邏輯一樣，只是移動的只有右下角這一個點，不是整個外框。
+function computeResizeSnap(entry, obj, x1, y1) {
+  const tol = OBJECT_SNAP_DIST / state.zoom;
+  let bestX = null, bestY = null;
+  for (const other of entry.objects) {
+    if (other === obj || other._editing) continue;
+    const ob = getBBox(other);
+    const ox0 = ob.x, oy0 = ob.y, ox1 = ob.x + ob.w, oy1 = ob.y + ob.h;
+    const targetXs = [ox0, (ox0 + ox1) / 2, ox1];
+    const targetYs = [oy0, (oy0 + oy1) / 2, oy1];
+    for (const tx of targetXs) {
+      const diff = tx - x1;
+      if (Math.abs(diff) <= tol && (!bestX || Math.abs(diff) < Math.abs(bestX.diff))) {
+        bestX = { diff, x: tx, y0: Math.min(oy0, y1), y1: Math.max(oy1, y1) };
+      }
+    }
+    for (const ty of targetYs) {
+      const diff = ty - y1;
+      if (Math.abs(diff) <= tol && (!bestY || Math.abs(diff) < Math.abs(bestY.diff))) {
+        bestY = { diff, y: ty, x0: Math.min(ox0, x1), x1: Math.max(ox1, x1) };
+      }
+    }
+  }
+  const guides = [];
+  let outX1 = x1, outY1 = y1;
+  if (bestX) {
+    outX1 = x1 + bestX.diff;
+    guides.push({ axis: "v", x: bestX.x, y0: bestX.y0, y1: bestX.y1 });
+  }
+  if (bestY) {
+    outY1 = y1 + bestY.diff;
+    guides.push({ axis: "h", y: bestY.y, x0: bestY.x0, x1: bestY.x1 });
+  }
+  return { x1: outX1, y1: outY1, guides };
+}
+
 // 吸附輔助線：畫在 overlay canvas 上的洋紅色虛線，跟框選預覽框（drawMarqueePreview）用同一套
 // 座標換算（要加回 PASTEBOARD_MARGIN，因為暫放區的物件也要能正常吸附、畫出輔助線）。
 function drawSnapGuidesPreview(entry, guides) {
@@ -2517,7 +2561,10 @@ function updateInteraction(pt, e) {
       pushHistory(it.entry);
       it.historyPushed = true;
     }
-    applyResize(it.obj, it.orig, pt, ctrl);
+    const guides = applyResize(it.obj, it.orig, pt, ctrl, it.entry);
+    redraw(it.entry);
+    drawSnapGuidesPreview(it.entry, guides);
+    return; // 吸附輔助線畫在 overlay canvas 上，上面那行 redraw 已經重畫過一次了
   } else if (it.mode === "groupResize") {
     const dx = pt.x - it.start.x, dy = pt.y - it.start.y;
     if (!it.historyPushed && (Math.abs(dx) > 0.3 || Math.abs(dy) > 0.3)) {
@@ -2634,31 +2681,50 @@ function applyMove(obj, orig, dx, dy) {
   }
 }
 
-function applyResize(obj, orig, pt, ctrl) {
+const RESIZE_MIN_SIZE = 10; // 單一物件縮放把手拖曳時的最小寬／高（point）
+
+function applyResize(obj, orig, pt, ctrl, entry) {
   // 旋轉中心要用「目前」的中心即時算，不能用拖曳開始那一刻的舊值：縮放把手拖曳中 w/h 會
   // 一直變化，物件的中心點也跟著一直變化，畫面上旋轉時實際用的錨點就是這個會變動的中心；
   // 如果拿拖曳開始時的舊中心點去反轉滑鼠座標，隨著w/h改變只會越轉越偏，基準點就跑掉了。
   const center = getCenter(obj);
   // 索引符號的外框不隨旋轉變化，縮放要用原始座標，不能先轉回局部座標（見 toLocalPointForBBox 的說明）
   const lp = obj.type === "indexmark" ? pt : rotatePointAround(pt, center, obj.rotation || 0);
+  let guides = [];
   if (obj.type === "text") {
     const d0 = Math.hypot(orig._w || 40, orig._h || 20) || 1;
     const d1 = Math.hypot(lp.x - orig.x, lp.y - orig.y);
     const ratio = Math.max(0.2, Math.min(6, d1 / d0));
     obj.fontSize = Math.max(6, Math.min(300, orig.fontSize * ratio));
-  } else {
+  } else if (obj.type === "indexmark") {
     let w = lp.x - obj.x;
     let h = lp.y - obj.y;
-    if (ctrl && obj.type === "image" && orig.w) {
+    const m = Math.max(Math.abs(w), Math.abs(h));
+    obj.w = (w < 0 ? -1 : 1) * m;
+    obj.h = (h < 0 ? -1 : 1) * m;
+  } else {
+    // 其他物件（矩形／圖片等）縮放時固定以左上角（obj.x, obj.y）為基準點，右下角把手只能把
+    // 寬高拉大或縮小到最小值，不能縮過頭變成負的——否則寬高變號會讓 getBBox 的
+    // Math.min/abs 把左上角跟右下角互換，看起來就像基準點突然跳到對角去。
+    let x1 = lp.x, y1 = lp.y;
+    const ratioLocked = ctrl && obj.type === "image" && orig.w;
+    // 按住 Ctrl 鎖定圖片長寬比例時，右下角已經不是自由移動，不套用吸附，不然兩邊互搶會讓
+    // 框一直抖動；其他情況才讓右下角去吸附同頁其他物件的邊緣／中心。
+    if (!ratioLocked && entry) {
+      const snap = computeResizeSnap(entry, obj, x1, y1);
+      x1 = snap.x1;
+      y1 = snap.y1;
+      guides = snap.guides;
+    }
+    let w = Math.max(RESIZE_MIN_SIZE, x1 - obj.x);
+    let h = Math.max(RESIZE_MIN_SIZE, y1 - obj.y);
+    if (ratioLocked) {
       h = w * (orig.h / orig.w); // 按住 Ctrl：維持圖片原本的長寬比例
-    } else if (obj.type === "indexmark") {
-      const m = Math.max(Math.abs(w), Math.abs(h));
-      w = (w < 0 ? -1 : 1) * m;
-      h = (h < 0 ? -1 : 1) * m;
     }
     obj.w = w;
     obj.h = h;
   }
+  return guides;
 }
 
 // 多選群組縮放：以整體外框的左上角為錨點，把每個物件的位置／大小依 sx,sy 比例縮放
@@ -2711,6 +2777,84 @@ function deleteSelected() {
   redraw(entry);
   renderToolOptions();
   if (lockedCount) toast(`已鎖定的 ${lockedCount} 個物件未被刪除`);
+}
+
+/* ---------------- 物件疊放順序（誰蓋在誰上面）：entry.objects 陣列順序本身就是疊放順序，
+   畫的時候跟 hitTest 都是從陣列尾端算最上層，所以「移到最上層」= 搬到陣列最後面，
+   「移到最下層」= 搬到陣列最前面，「上移/下移一層」= 跟相鄰那一個交換位置。 ---------------- */
+
+function bringObjToFront(entry, obj) {
+  const i = entry.objects.indexOf(obj);
+  if (i < 0 || i === entry.objects.length - 1) return false;
+  entry.objects.splice(i, 1);
+  entry.objects.push(obj);
+  return true;
+}
+function sendObjToBack(entry, obj) {
+  const i = entry.objects.indexOf(obj);
+  if (i <= 0) return false;
+  entry.objects.splice(i, 1);
+  entry.objects.unshift(obj);
+  return true;
+}
+function moveObjUpOne(entry, obj) {
+  const i = entry.objects.indexOf(obj);
+  if (i < 0 || i === entry.objects.length - 1) return false;
+  [entry.objects[i], entry.objects[i + 1]] = [entry.objects[i + 1], entry.objects[i]];
+  return true;
+}
+function moveObjDownOne(entry, obj) {
+  const i = entry.objects.indexOf(obj);
+  if (i <= 0) return false;
+  [entry.objects[i], entry.objects[i - 1]] = [entry.objects[i - 1], entry.objects[i]];
+  return true;
+}
+// 多選時「移到最上/最下層」：保留選取物件彼此之間原本的相對順序，整批搬到最前面或最後面。
+function bringObjsToFront(entry, objs) {
+  const set = new Set(objs);
+  if (entry.objects.filter((o) => set.has(o)).length !== objs.length) return false;
+  const rest = entry.objects.filter((o) => !set.has(o));
+  const selected = entry.objects.filter((o) => set.has(o));
+  entry.objects = rest.concat(selected);
+  return true;
+}
+function sendObjsToBack(entry, objs) {
+  const set = new Set(objs);
+  const rest = entry.objects.filter((o) => !set.has(o));
+  const selected = entry.objects.filter((o) => set.has(o));
+  entry.objects = selected.concat(rest);
+  return true;
+}
+// 加在物件面板上的「疊放順序」按鈕列，單選／多選共用。fn 回傳 false（已經在最上/最下層、
+// 沒有東西可以動）時就不產生任何變化，也不需要多推一筆復原紀錄。
+function addLayerButtons(container, entry, target) {
+  const row = document.createElement("div");
+  row.className = "btn-group";
+  row.style.flexWrap = "wrap";
+  const mk = (label, title, fn) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.title = title;
+    b.addEventListener("click", () => {
+      let changed = false;
+      withObjHistory(entry, () => {
+        changed = fn();
+      });
+      if (!changed) return;
+      renderToolOptions();
+    });
+    row.appendChild(b);
+  };
+  if (Array.isArray(target)) {
+    mk("⬆ 移到最上層", "整批移到所有物件的最上面（最後蓋上去）", () => bringObjsToFront(entry, target));
+    mk("⬇ 移到最下層", "整批移到所有物件的最下面（最先被蓋住）", () => sendObjsToBack(entry, target));
+  } else {
+    mk("⬆ 移到最上層", "移到所有物件的最上面（最後蓋上去）", () => bringObjToFront(entry, target));
+    mk("↑ 上移一層", "跟上面那一個物件交換疊放順序", () => moveObjUpOne(entry, target));
+    mk("↓ 下移一層", "跟下面那一個物件交換疊放順序", () => moveObjDownOne(entry, target));
+    mk("⬇ 移到最下層", "移到所有物件的最下面（最先被蓋住）", () => sendObjToBack(entry, target));
+  }
+  container.appendChild(row);
 }
 
 /* ---------------- 文字內容編輯（新增文字 / 取代既有文字 / 雙擊再編輯共用） ---------------- */
@@ -3284,6 +3428,142 @@ async function insertImageObjectAt(entry, file, centerPt) {
   return obj;
 }
 
+/* ---------------- 圖片物件裁切（彈窗內拖框選範圍，套用後縮小顯示框，原始照片保留不變） ---------------- */
+
+const IMG_CROP_HANDLE_KEYS = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+const IMG_CROP_MIN = 24; // 裁切框最小寬／高（彈窗內顯示用的 CSS px）
+let imageCropState = null; // { entry, obj, natW, natH, dispW, dispH, rect:{x,y,w,h} } rect 是顯示尺寸下的像素
+let imageCropDrag = null;
+
+function clampNum(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function ensureImageCropHandleEls() {
+  const stage = $("#icStage");
+  if (stage._handles) return stage._handles;
+  const els = {};
+  IMG_CROP_HANDLE_KEYS.forEach((key) => {
+    const el = document.createElement("div");
+    el.className = "img-crop-handle img-crop-handle-" + key;
+    el.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      try { el.setPointerCapture(e.pointerId); } catch (err) { /* 合成事件沒有有效 pointer 時略過即可 */ }
+      imageCropDrag = { mode: "resize", handle: key, startX: e.clientX, startY: e.clientY, orig: { ...imageCropState.rect } };
+    });
+    stage.appendChild(el);
+    els[key] = el;
+  });
+  stage._handles = els;
+  return els;
+}
+
+function renderImageCropBox() {
+  const r = imageCropState.rect;
+  const box = $("#icBox");
+  box.style.left = r.x + "px";
+  box.style.top = r.y + "px";
+  box.style.width = r.w + "px";
+  box.style.height = r.h + "px";
+  const handles = ensureImageCropHandleEls();
+  const x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h, xm = x0 + r.w / 2, ym = y0 + r.h / 2;
+  const pos = { nw: [x0, y0], n: [xm, y0], ne: [x1, y0], e: [x1, ym], se: [x1, y1], s: [xm, y1], sw: [x0, y1], w: [x0, ym] };
+  IMG_CROP_HANDLE_KEYS.forEach((key) => {
+    const [hx, hy] = pos[key];
+    handles[key].style.left = hx + "px";
+    handles[key].style.top = hy + "px";
+  });
+}
+
+function resizeImgCropRect(orig, handle, dx, dy, dispW, dispH) {
+  let x = orig.x, y = orig.y, x1 = orig.x + orig.w, y1 = orig.y + orig.h;
+  if (handle.includes("w")) x = clampNum(x + dx, 0, x1 - IMG_CROP_MIN);
+  if (handle.includes("e")) x1 = clampNum(x1 + dx, x + IMG_CROP_MIN, dispW);
+  if (handle.includes("n")) y = clampNum(y + dy, 0, y1 - IMG_CROP_MIN);
+  if (handle.includes("s")) y1 = clampNum(y1 + dy, y + IMG_CROP_MIN, dispH);
+  return { x, y, w: x1 - x, h: y1 - y };
+}
+
+window.addEventListener("pointermove", (e) => {
+  if (!imageCropDrag || !imageCropState) return;
+  const st = imageCropState;
+  const dx = e.clientX - imageCropDrag.startX, dy = e.clientY - imageCropDrag.startY;
+  if (imageCropDrag.mode === "move") {
+    const o = imageCropDrag.orig;
+    st.rect = {
+      x: clampNum(o.x + dx, 0, st.dispW - o.w),
+      y: clampNum(o.y + dy, 0, st.dispH - o.h),
+      w: o.w, h: o.h,
+    };
+  } else {
+    st.rect = resizeImgCropRect(imageCropDrag.orig, imageCropDrag.handle, dx, dy, st.dispW, st.dispH);
+  }
+  renderImageCropBox();
+});
+window.addEventListener("pointerup", () => {
+  imageCropDrag = null;
+});
+
+$("#icBox").addEventListener("pointerdown", (e) => {
+  if (!imageCropState) return;
+  e.stopPropagation();
+  e.preventDefault();
+  try { e.target.setPointerCapture(e.pointerId); } catch (err) { /* 同上 */ }
+  imageCropDrag = { mode: "move", startX: e.clientX, startY: e.clientY, orig: { ...imageCropState.rect } };
+});
+
+async function openImageCropModal(entry, obj) {
+  const img = $("#icImg");
+  img.src = obj.dataUrl;
+  $("#imageCropModal").hidden = false;
+  if (!(img.complete && img.naturalWidth)) {
+    await new Promise((resolve) => { img.onload = resolve; });
+  }
+  requestAnimationFrame(() => {
+    const dispW = img.clientWidth, dispH = img.clientHeight;
+    const crop = obj.crop || { x: 0, y: 0, w: 1, h: 1 };
+    imageCropState = {
+      entry, obj, natW: img.naturalWidth, natH: img.naturalHeight, dispW, dispH,
+      rect: { x: crop.x * dispW, y: crop.y * dispH, w: crop.w * dispW, h: crop.h * dispH },
+    };
+    renderImageCropBox();
+  });
+}
+
+function closeImageCropModal() {
+  $("#imageCropModal").hidden = true;
+  imageCropState = null;
+  imageCropDrag = null;
+}
+
+$("#icCancel").addEventListener("click", closeImageCropModal);
+$("#icReset").addEventListener("click", () => {
+  if (!imageCropState) return;
+  imageCropState.rect = { x: 0, y: 0, w: imageCropState.dispW, h: imageCropState.dispH };
+  renderImageCropBox();
+});
+$("#icApply").addEventListener("click", () => {
+  if (!imageCropState) return;
+  const { entry, obj, natW, natH, dispW, dispH, rect } = imageCropState;
+  const cropFrac = { x: rect.x / dispW, y: rect.y / dispH, w: rect.w / dispW, h: rect.h / dispH };
+  // 維持目前「每像素對應多少 point」的比例不變：裁切後顯示框跟著縮小，左上角位置不動，
+  // 這樣套用完看起來就是「挖掉不要的部分」，不會整張圖突然被放大或縮小。
+  const prevCrop = obj.crop || { x: 0, y: 0, w: 1, h: 1 };
+  const scaleX = obj.w / (prevCrop.w * natW);
+  const scaleY = obj.h / (prevCrop.h * natH);
+  const newW = cropFrac.w * natW * scaleX;
+  const newH = cropFrac.h * natH * scaleY;
+  withObjHistory(entry, () => {
+    obj.crop = cropFrac;
+    obj.w = newW;
+    obj.h = newH;
+  });
+  renderToolOptions();
+  closeImageCropModal();
+  toast("已套用圖片裁切");
+});
+
 window.addEventListener("paste", async (e) => {
   const tag = document.activeElement && document.activeElement.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA") return; // 讓一般文字欄位的貼上照常運作
@@ -3490,6 +3770,7 @@ function buildMultiObjectPanel(objs, entry) {
   });
   toolOptionsEl.appendChild(unlockBtn);
 
+  addLayerButtons(toolOptionsEl, entry, objs);
   addDeleteButton(toolOptionsEl);
 }
 
@@ -3680,6 +3961,11 @@ function buildObjectPanel(obj, entry) {
     addRangeInput(toolOptionsEl, "粗細", obj.width, 1, 40, (v) => withObjHistory(entry, () => (obj.width = v)));
   } else if (obj.type === "image") {
     if (!obj.border) obj.border = { enabled: false, color: "#000000", width: 2 };
+    const cropBtn = document.createElement("button");
+    cropBtn.textContent = "✂ 裁切圖片";
+    cropBtn.title = "裁掉圖片不要的部分，照片原始內容不會被破壞，之後可以再重新調整裁切範圍";
+    cropBtn.addEventListener("click", () => openImageCropModal(entry, obj));
+    toolOptionsEl.appendChild(cropBtn);
     addCheckbox(toolOptionsEl, "外框", obj.border.enabled, (v) => {
       withObjHistory(entry, () => (obj.border.enabled = v));
       renderToolOptions();
@@ -3735,6 +4021,7 @@ function buildObjectPanel(obj, entry) {
     editBtn.addEventListener("click", () => openIndexMarkEditor(entry, obj));
     toolOptionsEl.appendChild(editBtn);
   }
+  addLayerButtons(toolOptionsEl, entry, obj);
   addDeleteButton(toolOptionsEl);
 }
 

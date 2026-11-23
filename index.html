@@ -217,6 +217,22 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="imageCropModal" hidden>
+  <div class="modal">
+    <h3>裁切圖片</h3>
+    <div class="img-crop-stage" id="icStage">
+      <img id="icImg" draggable="false" alt="">
+      <div class="img-crop-box" id="icBox"></div>
+    </div>
+    <p style="margin:0;font-size:12px;color:var(--label-e);">拖曳邊框調整要保留的範圍，拖曳框內可整個移動位置。原始照片不會被破壞，之後可以再重新調整。</p>
+    <div class="modal-actions">
+      <button id="icReset">還原成完整圖片</button>
+      <button id="icCancel">取消</button>
+      <button id="icApply" class="primary">套用裁切</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast" hidden></div>
 <div class="loading-overlay" id="loadingOverlay" hidden><div class="spinner"></div><div id="loadingText">處理中…</div></div>
 
