@@ -138,7 +138,8 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
 .toolbar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 8px 12px; background: var(--toolbar-bg); color: var(--toolbar-text); z-index: 30;
+  padding: 8px 12px; background: var(--toolbar-bg); color: var(--toolbar-text);
+  position: relative; z-index: 30;
   box-shadow: 0 2px 8px var(--toolbar-shadow);
 }
 .brand { font-weight: 700; margin-right: 8px; white-space: nowrap; }
@@ -166,10 +167,19 @@ button.tool-btn[hidden] { display: none; }
 
 #zoomLabel { width: 46px; text-align: center; font-size: 13px; }
 
-#toolOptions { gap: 10px; }
-#toolOptions label { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--label-a); }
+/* 項目一多，每個「標籤＋控制項」要整組一起換到下一行，不能讓文字自己斷行變成
+   「邊框／粗細」這種兩截的怪樣子，所以每個子項都設 flex:0 0 auto（不被壓縮）、
+   文字 white-space:nowrap；只有純文字提示（没包在 label/button 裡的 span）例外，
+   讓它自己獨佔一整行、可以正常換行（見下面 #toolOptions > span）。 */
+#toolOptions { gap: 10px; row-gap: 8px; flex-wrap: wrap; align-items: center; }
+#toolOptions label {
+  display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--label-a);
+  white-space: nowrap; flex: 0 0 auto;
+}
+#toolOptions button { flex: 0 0 auto; white-space: nowrap; }
+#toolOptions > span { flex: 1 1 100%; white-space: normal; }
 #toolOptions input[type=color] { width: 28px; height: 28px; padding: 0; border: none; background: none; }
-#toolOptions .color-swatches { display: flex; gap: 3px; }
+#toolOptions .color-swatches { display: flex; gap: 3px; flex: 0 0 auto; }
 #toolOptions .color-swatch { width: 18px; height: 18px; padding: 0; border: 1px solid var(--swatch-border); border-radius: 3px; cursor: pointer; }
 #toolOptions .color-swatch:hover { border-color: #fff; }
 #toolOptions input[type=range] { width: 90px; }
@@ -177,9 +187,22 @@ button.tool-btn[hidden] { display: none; }
   padding: 4px 6px; border: 1px solid var(--modal-input-border); border-radius: 6px;
   background: var(--modal-input-bg); color: var(--modal-input-text);
 }
-#toolOptions .btn-group { display: flex; gap: 4px; }
+#toolOptions .btn-group { display: flex; gap: 4px; flex: 0 0 auto; }
 #toolOptions .btn-group button.mini { padding: 3px 8px; font-size: 12px; }
 #toolOptions .btn-group button.mini.active { background: var(--accent); border-color: var(--accent); }
+
+/* 桌面版：物件／工具的選項列浮在主工具列正下方，不佔版面高度，不管裡面的項目
+   多寡、要換幾行，底下的頁面位置都不會跟著往下移（跟手機版「浮在工具列上方」
+   是同一個精神，只是桌面版主工具列在上面，所以改成浮在它下面）。 */
+@media (min-width: 761px) {
+  #toolOptions:not(:empty) {
+    position: absolute; left: 0; right: 0; top: 100%;
+    margin: 0; padding: 8px 12px;
+    background: var(--toolbar-bg);
+    box-shadow: 0 4px 10px var(--toolbar-shadow);
+    max-height: 50vh; overflow-y: auto;
+  }
+}
 
 .main { flex: 1; display: flex; min-height: 0; }
 
