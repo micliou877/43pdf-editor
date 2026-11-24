@@ -1335,6 +1335,13 @@ function renderPageObjects(entry, ctx, scale, opts) {
     drawPageNumberObj(ctx, state.pageNumberConfig, scale, pageW, pageH, entry);
     ctx.restore();
   }
+  // 只有編輯畫面（有暫放區）才需要顯示邊界參考線；匯出的乾淨版本不畫。
+  if (opts.pasteboard && objectsExceedPageBounds(entry)) {
+    ctx.save();
+    ctx.translate(marginPx * scale, marginPx * scale);
+    drawPageBoundaryGuide(ctx, pageW, pageH);
+    ctx.restore();
+  }
 }
 
 // 頁碼：cfg = { format, startAt, skipFirst, position, fontSize, color }
@@ -1392,6 +1399,21 @@ function drawPageNumberObj(ctx, cfg, scale, cw, ch, entry) {
   }
 
   ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
+// 頁面邊界參考線：有物件超出目前頁面範圍、可能蓋住紙張邊緣讓人看不出實際多大時，
+// 用「白底＋深色虛線」疊在最上層補畫一圈邊界，不管物件本身是什麼顏色都能看得出來。
+function drawPageBoundaryGuide(ctx, pageW, pageH) {
+  ctx.save();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(255,255,255,.9)";
+  ctx.strokeRect(0, 0, pageW, pageH);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = "rgba(0,0,0,.6)";
+  ctx.setLineDash([5, 4]);
+  ctx.strokeRect(0, 0, pageW, pageH);
+  ctx.setLineDash([]);
   ctx.restore();
 }
 
@@ -1487,6 +1509,37 @@ function drawImageObject(ctx, obj, scale, entry) {
     ctx.strokeRect(obj.x * scale, obj.y * scale, obj.w * scale, obj.h * scale);
     ctx.restore();
   }
+  if (obj.dateStamp && obj.dateStamp.enabled && obj.dateStamp.date) {
+    drawImageDateStamp(ctx, obj, scale);
+  }
+}
+
+// 相機日期章：仿照相機會把拍照日期燒印在照片左下角的樣子，橘黃色數字＋深色描邊
+// 確保疊在任何顏色的照片上都看得清楚；字級跟留白都是照片本身高度的比例，照片縮放時
+// 日期章也會跟著等比例縮放，不用每張照片自己再調一次大小。
+function drawImageDateStamp(ctx, obj, scale) {
+  const w = Math.abs(obj.w), h = Math.abs(obj.h);
+  const x0 = Math.min(obj.x, obj.x + obj.w), y0 = Math.min(obj.y, obj.y + obj.h);
+  const [y, m, d] = obj.dateStamp.date.split("-");
+  const text = `${y}/${m}/${d}`;
+  const fontPt = Math.max(10, Math.min(42, h * 0.045));
+  const padPt = fontPt * 0.6;
+  const fontPx = fontPt * scale;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x0 * scale, y0 * scale, w * scale, h * scale);
+  ctx.clip();
+  ctx.font = `${fontPx}px "Consolas","DejaVu Sans Mono",monospace`;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "bottom";
+  const tx = x0 * scale + padPt * scale;
+  const ty = y0 * scale + h * scale - padPt * scale;
+  ctx.lineWidth = Math.max(1, fontPx * 0.12);
+  ctx.strokeStyle = "rgba(0,0,0,.55)";
+  ctx.strokeText(text, tx, ty);
+  ctx.fillStyle = "#ffae00";
+  ctx.fillText(text, tx, ty);
+  ctx.restore();
 }
 
 function drawStrokeObject(ctx, obj, scale, opacity) {
@@ -1946,6 +1999,18 @@ function getSelectionBBox(objs) {
     });
   });
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+// 判斷目前有沒有物件（旋轉後實際佔據的範圍）超出了目前顯示的頁面邊界、跑到暫放區，
+// 這種時候物件可能會蓋住紙張邊緣，才需要額外畫邊界參考線（見 drawPageBoundaryGuide）。
+function objectsExceedPageBounds(entry) {
+  const x0 = entry.cropX || 0, y0 = entry.cropY || 0;
+  const x1 = x0 + (entry.cropW || 0), y1 = y0 + (entry.cropH || 0);
+  const EPS = 0.5;
+  return entry.objects.some((obj) => {
+    if (obj._editing) return false;
+    const b = getSelectionBBox([obj]);
+    return b.x < x0 - EPS || b.y < y0 - EPS || b.x + b.w > x1 + EPS || b.y + b.h > y1 + EPS;
+  });
 }
 function bboxIntersects(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
@@ -3723,6 +3788,24 @@ function addColorInput(container, label, value, onChange) {
   container.appendChild(l);
   return input;
 }
+function addDateInput(container, label, value, onChange) {
+  const l = document.createElement("label");
+  l.textContent = label;
+  const input = document.createElement("input");
+  input.type = "date";
+  if (value) input.value = value;
+  input.addEventListener("input", () => {
+    if (input.value) onChange(input.value);
+  });
+  l.appendChild(input);
+  container.appendChild(l);
+  return input;
+}
+function todayISO() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 function addRangeInput(container, label, value, min, max, onChange) {
   const l = document.createElement("label");
   l.textContent = label;
@@ -3809,6 +3892,35 @@ function buildMultiObjectPanel(objs, entry) {
     renderToolOptions();
   });
   toolOptionsEl.appendChild(unlockBtn);
+
+  const imageObjs = objs.filter((o) => o.type === "image");
+  if (imageObjs.length) {
+    const dateHint = document.createElement("span");
+    dateHint.style.cssText = "font-size:12px;color:var(--label-c);";
+    dateHint.textContent = `幫其中 ${imageObjs.length} 張照片加入相機日期章（左下角）`;
+    toolOptionsEl.appendChild(dateHint);
+    let pickedDate = todayISO();
+    addDateInput(toolOptionsEl, "日期", pickedDate, (v) => (pickedDate = v));
+    const applyDateBtn = document.createElement("button");
+    applyDateBtn.textContent = "📅 套用到所選照片";
+    applyDateBtn.addEventListener("click", () => {
+      pushHistory(entry);
+      imageObjs.forEach((o) => (o.dateStamp = { enabled: true, date: pickedDate }));
+      redraw(entry);
+      renderToolOptions();
+      toast(`已幫 ${imageObjs.length} 張照片加入日期`);
+    });
+    toolOptionsEl.appendChild(applyDateBtn);
+    const clearDateBtn = document.createElement("button");
+    clearDateBtn.textContent = "移除日期章";
+    clearDateBtn.addEventListener("click", () => {
+      pushHistory(entry);
+      imageObjs.forEach((o) => { if (o.dateStamp) o.dateStamp.enabled = false; });
+      redraw(entry);
+      renderToolOptions();
+    });
+    toolOptionsEl.appendChild(clearDateBtn);
+  }
 
   addLayerButtons(toolOptionsEl, entry, objs);
   addDeleteButton(toolOptionsEl);
@@ -4013,6 +4125,14 @@ function buildObjectPanel(obj, entry) {
     if (obj.border.enabled) {
       addColorInput(toolOptionsEl, "外框顏色", obj.border.color, (v) => withObjHistory(entry, () => (obj.border.color = v)));
       addRangeInput(toolOptionsEl, "外框粗細", obj.border.width, 1, 10, (v) => withObjHistory(entry, () => (obj.border.width = v)));
+    }
+    if (!obj.dateStamp) obj.dateStamp = { enabled: false, date: todayISO() };
+    addCheckbox(toolOptionsEl, "📅 相機日期章（左下角）", obj.dateStamp.enabled, (v) => {
+      withObjHistory(entry, () => (obj.dateStamp.enabled = v));
+      renderToolOptions();
+    });
+    if (obj.dateStamp.enabled) {
+      addDateInput(toolOptionsEl, "日期", obj.dateStamp.date, (v) => withObjHistory(entry, () => (obj.dateStamp.date = v)));
     }
   } else if (obj.type === "rect" || obj.type === "ellipse" || obj.type === "cloud") {
     addColorInput(toolOptionsEl, "邊框顏色", obj.stroke, (v) => withObjHistory(entry, () => (obj.stroke = v)));

@@ -173,6 +173,10 @@ button.tool-btn[hidden] { display: none; }
 #toolOptions .color-swatch { width: 18px; height: 18px; padding: 0; border: 1px solid var(--swatch-border); border-radius: 3px; cursor: pointer; }
 #toolOptions .color-swatch:hover { border-color: #fff; }
 #toolOptions input[type=range] { width: 90px; }
+#toolOptions input[type=date] {
+  padding: 4px 6px; border: 1px solid var(--modal-input-border); border-radius: 6px;
+  background: var(--modal-input-bg); color: var(--modal-input-text);
+}
 #toolOptions .btn-group { display: flex; gap: 4px; }
 #toolOptions .btn-group button.mini { padding: 3px 8px; font-size: 12px; }
 #toolOptions .btn-group button.mini.active { background: var(--accent); border-color: var(--accent); }
