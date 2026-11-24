@@ -1324,7 +1324,10 @@ function renderPageObjects(entry, ctx, scale, opts) {
   }
 
   if (opts.withHandles && state.selected && state.selected.entry === entry) {
-    drawSelectionUI(ctx, state.selected.objs, scale);
+    // 正在用浮動輸入框編輯文字的物件不疊畫選取框／把手——物件很小的時候，
+    // 虛線框、縮放把手、旋轉把手全部擠在一小塊範圍裡，看起來會很亂。
+    const visibleSel = state.selected.objs.filter((o) => !o._editing);
+    if (visibleSel.length) drawSelectionUI(ctx, visibleSel, scale);
   }
   ctx.restore();
   // 頁碼畫在裁切位移之外（不受裁切影響，永遠貼齊目前看得到的頁面邊緣），但還是要跟著
@@ -3083,6 +3086,10 @@ function closeTextEditor(commit) {
   state.currentTextEditor.commit();
 }
 
+// 圖形／索引符號的輸入框最小尺寸（CSS px）：圖形本身縮得再小，輸入框也不會小過這個值，
+// 不然會變成一個點不到、打字看不到游標的迷你方塊。
+const MIN_EDITOR_SIZE = { w: 44, h: 28 };
+
 // 在圖形（方形／橢圓）中間輸入文字：編輯區覆蓋整個圖形外框，文字置中，
 // 與一般文字物件不同的是：清空文字不會刪除圖形本身，圖形可以單純當外框使用。
 function openShapeTextEditor(entry, obj) {
@@ -3097,11 +3104,16 @@ function openShapeTextEditor(entry, obj) {
   const editor = document.createElement("textarea");
   editor.className = "inline-editor";
   editor.value = obj.text;
-  editor.style.left = (b.x - entry.cropX) * state.zoom + "px";
-  editor.style.top = (b.y - entry.cropY) * state.zoom + "px";
-  editor.style.width = Math.max(20, b.w * state.zoom) + "px";
-  editor.style.height = Math.max(20, b.h * state.zoom) + "px";
-  editor.style.fontSize = Math.max(10, obj.fontSize * state.zoom) + "px";
+  // 圖形本身太小時，輸入框不跟著縮到看不清楚、打不到字——至少維持一個看得清楚、
+  // 點得到的最小尺寸，並以圖形中心為準往外擴，不會因為尺寸被撐大就偏到一邊去。
+  const boxW = Math.max(MIN_EDITOR_SIZE.w, b.w * state.zoom);
+  const boxH = Math.max(MIN_EDITOR_SIZE.h, b.h * state.zoom);
+  const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+  editor.style.left = (cx - entry.cropX) * state.zoom - boxW / 2 + "px";
+  editor.style.top = (cy - entry.cropY) * state.zoom - boxH / 2 + "px";
+  editor.style.width = boxW + "px";
+  editor.style.height = boxH + "px";
+  editor.style.fontSize = Math.max(12, obj.fontSize * state.zoom) + "px";
   editor.style.color = obj.textColor;
   editor.style.textAlign = "center";
   editor.style.resize = "none";
@@ -3151,13 +3163,15 @@ function openIndexMarkEditor(entry, obj) {
   editor.className = "inline-editor";
   editor.value = obj.text;
   const wPt = R * 1.6, hPt = R * 1.2;
-  editor.style.left = (cx - wPt / 2 - entry.cropX) * state.zoom + "px";
-  editor.style.top = (cy - hPt / 2 - entry.cropY) * state.zoom + "px";
-  editor.style.width = wPt * state.zoom + "px";
-  editor.style.height = hPt * state.zoom + "px";
-  editor.style.minWidth = "0";
-  editor.style.minHeight = "0";
-  editor.style.fontSize = Math.max(10, obj.fontSize * state.zoom) + "px";
+  // 索引符號縮得很小時 R 會跟著變得很小，輸入框一樣要有個看得清楚的最小尺寸（見
+  // MIN_EDITOR_SIZE），不然會變成點不到、看不到游標的迷你方塊。
+  const boxW = Math.max(MIN_EDITOR_SIZE.w, wPt * state.zoom);
+  const boxH = Math.max(MIN_EDITOR_SIZE.h, hPt * state.zoom);
+  editor.style.left = (cx - entry.cropX) * state.zoom - boxW / 2 + "px";
+  editor.style.top = (cy - entry.cropY) * state.zoom - boxH / 2 + "px";
+  editor.style.width = boxW + "px";
+  editor.style.height = boxH + "px";
+  editor.style.fontSize = Math.max(12, obj.fontSize * state.zoom) + "px";
   editor.style.color = obj.textColor;
   editor.style.textAlign = "center";
   editor.style.resize = "none";
