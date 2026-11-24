@@ -2828,8 +2828,22 @@ function applyResize(obj, orig, pt, ctrl, entry) {
     }
     obj.w = w;
     obj.h = h;
+    keepResizeAnchorFixed(obj, orig, w, h);
   }
   return guides;
+}
+
+// 物件轉過角度時，縮放中心是會隨 w/h 即時改變的「目前」中心（見上面 applyResize 開頭的說明，
+// 那是為了讓拖曳中的那個角緊貼滑鼠），但這會讓沒被拖動的那個角（基準點）繞著移動中的中心
+// 一起被轉，畫面上看起來基準點自己跑掉了。這裡用拖曳開始那一刻、基準點原本所在的世界座標
+// 當作目標，每一步都反推 obj.x/y，讓基準點在畫面上整個拖曳過程都釘死在原地不動。
+function keepResizeAnchorFixed(obj, orig, w, h) {
+  const rotation = orig.rotation || 0;
+  if (!rotation) return; // 沒有旋轉時 obj.x/y 本來就等於世界座標，不需要額外校正
+  const anchorWorld = localCornerToWorld(orig, { x: orig.x, y: orig.y });
+  const rotVec = rotatePointAround({ x: -w / 2, y: -h / 2 }, { x: 0, y: 0 }, -rotation);
+  obj.x = anchorWorld.x - w / 2 - rotVec.x;
+  obj.y = anchorWorld.y - h / 2 - rotVec.y;
 }
 
 // 多選群組縮放：以整體外框的左上角為錨點，把每個物件的位置／大小依 sx,sy 比例縮放
