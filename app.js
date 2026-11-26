@@ -44,6 +44,8 @@ const state = {
   interaction: null,    // 目前進行中的滑鼠操作
   currentTextEditor: null,
   lastActiveEntry: null,
+  undoStack: [],        // 全域跨頁復原堆疊：{ entry, objects, watermark, cropX, cropY, cropW, cropH, userDelta }
+  redoStack: [],        // 全域重做堆疊
   objectClipboard: null, // 按 Ctrl+C 複製的物件備份；平常貼上一律看系統剪貼簿，這個只在系統剪貼簿讀不到東西時當備援
   defaults: {
     text: { color: "#000000", fontSize: 20, bg: { enabled: false, color: "#ffff00" }, border: { enabled: false, color: "#000000", width: 2 } },
@@ -54,6 +56,44 @@ const state = {
     indexmark: { stroke: "#e21818", strokeWidth: 2, fill: { enabled: false, color: "#e21818", opacity: 1 }, textColor: "#000000", fontSize: 28 },
   },
 };
+const DEFAULTS_KEY = "pdf_editor_defaults";
+function loadSavedDefaults() {
+  try {
+    const raw = localStorage.getItem(DEFAULTS_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (!saved || typeof saved !== "object") return;
+    ["text", "highlight", "pen", "shape", "indexmark"].forEach((k) => {
+      if (saved[k] && typeof saved[k] === "object") {
+        state.defaults[k] = {
+          ...state.defaults[k],
+          ...saved[k],
+          ...(state.defaults[k].bg && saved[k].bg ? { bg: { ...state.defaults[k].bg, ...saved[k].bg } } : {}),
+          ...(state.defaults[k].border && saved[k].border ? { border: { ...state.defaults[k].border, ...saved[k].border } } : {}),
+          ...(state.defaults[k].fill && saved[k].fill ? { fill: { ...state.defaults[k].fill, ...saved[k].fill } } : {}),
+        };
+      }
+    });
+    if (saved.stamp && typeof saved.stamp === "object") {
+      if (saved.stamp.targetW) state.defaults.stamp.targetW = saved.stamp.targetW;
+      if (saved.stamp.border) state.defaults.stamp.border = { ...state.defaults.stamp.border, ...saved.stamp.border };
+    }
+  } catch (e) {}
+}
+function saveDefaults() {
+  try {
+    const { dataUrl, fileName, naturalW, naturalH, ...stampMeta } = state.defaults.stamp;
+    localStorage.setItem(DEFAULTS_KEY, JSON.stringify({
+      text: state.defaults.text,
+      highlight: state.defaults.highlight,
+      pen: state.defaults.pen,
+      shape: state.defaults.shape,
+      indexmark: state.defaults.indexmark,
+      stamp: stampMeta,
+    }));
+  } catch (e) {}
+}
+loadSavedDefaults();
 let pendingObjEditPushed = false;
 
 const $ = (sel) => document.querySelector(sel);
@@ -81,10 +121,29 @@ function hideLoading() {
 }
 
 function setControlsEnabled(enabled) {
-  ["btnDownload", "btnUndo", "btnZoomOut", "btnZoomIn", "btnExtract", "btnDeleteSelected"].forEach((id) => {
-    $("#" + id).disabled = !enabled;
+  ["btnDownload", "btnZoomOut", "btnZoomIn", "zoomLabel", "btnFitWidth", "btnFitPage", "chkSelectAll"].forEach((id) => {
+    const el = $("#" + id);
+    if (el) el.disabled = !enabled;
   });
+  $("#pageNav").hidden = !enabled;
   emptyState.style.display = enabled ? "none" : "flex";
+  updateHistoryButtons();
+  updateSelectionButtons();
+  updateDocName();
+}
+
+function updateDocName() {
+  const el = $("#docNameLabel");
+  if (!el) return;
+  if (!state.pages.length || !state.sources.length) {
+    el.textContent = "";
+    el.title = "尚未開啟檔案";
+    return;
+  }
+  const first = state.sources[0].fileName || "未命名.pdf";
+  const suffix = state.sources.length > 1 ? ` 等 ${state.sources.length} 份` : "";
+  el.textContent = first + suffix;
+  el.title = `${first}${suffix}（共 ${state.pages.length} 頁）`;
 }
 
 /* ---------------- 檔案開啟 / 合併 ---------------- */
@@ -205,6 +264,10 @@ function clearAll() {
   state.sources = [];
   state.pages = [];
   state.pageNumberConfig = null;
+  state.undoStack = [];
+  state.redoStack = [];
+  state.currentPageIndex = 0;
+  lastCheckedPageIndex = -1;
   setSelected(null);
   viewerScroll.innerHTML = "";
   thumbList.innerHTML = "";
@@ -370,6 +433,7 @@ async function renderPage(entry, zoom, opts) {
   entry.innerEl.style.height = h + "px";
 
   await renderTextLayer(entry, viewport, w, h);
+  entry._renderedZoom = zoom;
   redraw(entry, opts);
 }
 
@@ -444,6 +508,9 @@ function renumber() {
   // 頁碼是依照頁面「目前的順序」即時算出來的，順序一變就要重畫全部頁面讓頁碼同步更新
   if (state.pageNumberConfig) state.pages.forEach((entry) => redraw(entry));
   applyViewMode();
+  updateSelectionButtons();
+  updateHistoryButtons();
+  updateDocName();
 }
 
 /* ---------------- 左下角顯示頁面尺寸 ---------------- */
@@ -546,6 +613,7 @@ function buildThumb(entry) {
   entry.thumbCanvasEl = canvas;
   entry.thumbCheckEl = check;
   entry.thumbNumEl = num;
+  if (state.pages.indexOf(entry) === state.currentPageIndex) highlightCurrent(entry);
 
   renderThumb(entry);
 
@@ -572,7 +640,19 @@ function buildThumb(entry) {
     const r = btnMore.getBoundingClientRect();
     showThumbContextMenu(entry, r.right, r.bottom);
   });
-  check.addEventListener("change", updateSelectionButtons);
+  check.addEventListener("click", (e) => {
+    const idx = state.pages.indexOf(entry);
+    if (e.shiftKey && lastCheckedPageIndex >= 0 && lastCheckedPageIndex < state.pages.length && idx >= 0) {
+      const a = Math.min(lastCheckedPageIndex, idx);
+      const b = Math.max(lastCheckedPageIndex, idx);
+      const val = check.checked;
+      for (let i = a; i <= b; i++) {
+        if (state.pages[i].thumbCheckEl) state.pages[i].thumbCheckEl.checked = val;
+      }
+    }
+    if (idx >= 0) lastCheckedPageIndex = idx;
+    updateSelectionButtons();
+  });
 
   item.addEventListener("dragstart", (e) => {
     // 若拖曳的是已勾選的頁面，連同所有勾選頁面一起移動或複製；否則只處理這一頁
@@ -743,8 +823,8 @@ async function renderThumb(entry) {
 }
 
 function highlightCurrent(entry) {
-  state.pages.forEach((p) => p.thumbItemEl.classList.remove("current"));
-  entry.thumbItemEl.classList.add("current");
+  state.pages.forEach((p) => p.thumbItemEl && p.thumbItemEl.classList.remove("current"));
+  if (entry && entry.thumbItemEl) entry.thumbItemEl.classList.add("current");
 }
 
 function reorderPages(fromEntry, toEntry) {
@@ -1058,15 +1138,51 @@ async function insertFileAtIndex(file, index) {
   }
 }
 
+let lastCheckedPageIndex = -1;
+
 function updateSelectionButtons() {
-  const anyChecked = state.pages.some((p) => p.thumbCheckEl && p.thumbCheckEl.checked);
-  $("#btnExtract").disabled = !anyChecked;
-  $("#btnDeleteSelected").disabled = !anyChecked;
+  const total = state.pages.length;
+  const checkedCount = state.pages.filter((p) => p.thumbCheckEl && p.thumbCheckEl.checked).length;
+  const anyChecked = checkedCount > 0;
+  ["btnExtract", "btnDeleteSelected", "btnRotateSelectedL", "btnRotateSelectedR"].forEach((id) => {
+    const el = $("#" + id);
+    if (el) el.disabled = !anyChecked;
+  });
+  const chkAll = $("#chkSelectAll");
+  if (chkAll) {
+    chkAll.disabled = total === 0;
+    chkAll.checked = total > 0 && checkedCount === total;
+    chkAll.indeterminate = checkedCount > 0 && checkedCount < total;
+  }
+  const countEl = $("#thumbSelectedCount");
+  if (countEl) {
+    countEl.textContent = checkedCount > 0 ? `已選 ${checkedCount} / ${total} 頁` : total > 0 ? `共 ${total} 頁` : "";
+  }
+}
+
+$("#chkSelectAll").addEventListener("change", () => {
+  const checked = $("#chkSelectAll").checked;
+  state.pages.forEach((p) => {
+    if (p.thumbCheckEl) p.thumbCheckEl.checked = checked;
+  });
+  lastCheckedPageIndex = -1;
+  updateSelectionButtons();
+});
+
+$("#btnRotateSelectedL").addEventListener("click", () => rotateSelectedPages(-90));
+$("#btnRotateSelectedR").addEventListener("click", () => rotateSelectedPages(90));
+
+function rotateSelectedPages(delta) {
+  const selected = state.pages.filter((p) => p.thumbCheckEl && p.thumbCheckEl.checked);
+  if (!selected.length) return;
+  selected.forEach((entry) => rotatePage(entry, delta));
+  toast(`已旋轉 ${selected.length} 頁`);
 }
 
 /* ---------------- 旋轉 / 刪除 / 取出 ---------------- */
 
 function rotatePage(entry, delta) {
+  pushHistory(entry);
   entry.userDelta = (((entry.userDelta + delta) % 360) + 360) % 360;
   layoutPage(entry);
   renderThumb(entry);
@@ -1124,21 +1240,86 @@ function showConfirm(message) {
   });
 }
 
-$("#btnExtract").addEventListener("click", async () => {
+$("#btnExtract").addEventListener("click", () => {
   const selected = state.pages.filter((p) => p.thumbCheckEl.checked);
   if (!selected.length) return;
-  await exportPages(selected, "取出頁面.pdf");
+  openExportModal(selected, "取出頁面.pdf");
 });
 
-/* ---------------- 縮放 ---------------- */
+/* ---------------- 縮放（大檔採可視區域優先＋背景懶載入重繪） ---------------- */
 
 $("#btnZoomIn").addEventListener("click", () => changeZoom(0.15));
 $("#btnZoomOut").addEventListener("click", () => changeZoom(-0.15));
+$("#zoomLabel").addEventListener("click", () => { if (state.pages.length) setZoom(1.0); });
+$("#btnFitWidth").addEventListener("click", () => fitCurrentPageWidth());
+$("#btnFitPage").addEventListener("click", () => fitCurrentPageToViewer());
 
-// 雙指縮放手勢會在很短時間內連續觸發很多次（每個畫面更新週期一次），如果上一次的
-// setZoom 還在跑（renderPage 要等 PDF.js 重繪，不是立即完成），不能再疊一次重複執行，
-// 不然好幾個縮放同時重畫同一批 canvas，畫面會亂跳、loading 遮罩也會閃爍。這裡用「尾端
-// 節流」：忙碌中新進來的縮放要求只記住最新那個目標值，等目前這次跑完才接著處理。
+// 先把還沒重繪完的頁面外框依新縮放比例立即調整，讓捲動位置與頁面尺寸在縮放瞬間就準確，
+// 避免還沒捲到的幾十頁全部卡在同步 renderPage。
+function preLayoutPageForZoom(entry, zoom) {
+  const w = Math.round(entry.cropW * zoom * CSS_SCALE);
+  const h = Math.round(entry.cropH * zoom * CSS_SCALE);
+  entry.baseCanvasEl.style.width = w + "px";
+  entry.baseCanvasEl.style.height = h + "px";
+  const marginPx = Math.round(PASTEBOARD_MARGIN * zoom * CSS_SCALE);
+  const ow = w + marginPx * 2, oh = h + marginPx * 2;
+  entry.overlayCanvasEl.style.width = ow + "px";
+  entry.overlayCanvasEl.style.height = oh + "px";
+  entry.overlayCanvasEl.style.left = -marginPx + "px";
+  entry.overlayCanvasEl.style.top = -marginPx + "px";
+  entry.textLayerEl.style.width = w + "px";
+  entry.textLayerEl.style.height = h + "px";
+  entry.innerEl.style.width = w + "px";
+  entry.innerEl.style.height = h + "px";
+  layoutPage(entry);
+}
+
+function getVisiblePageIndices(buffer) {
+  buffer = buffer == null ? 1 : buffer;
+  if (!state.pages.length) return [];
+  if (state.viewMode === "single") return [state.currentPageIndex];
+  if (state.viewMode === "spread") {
+    const out = [state.currentPageIndex];
+    if (state.currentPageIndex + 1 < state.pages.length) out.push(state.currentPageIndex + 1);
+    return out;
+  }
+  const vr = viewerScroll.getBoundingClientRect();
+  const out = [];
+  for (let i = 0; i < state.pages.length; i++) {
+    const r = state.pages[i].rowEl.getBoundingClientRect();
+    if (r.bottom >= vr.top - vr.height * buffer && r.top <= vr.bottom + vr.height * buffer) {
+      out.push(i);
+    }
+  }
+  return out.length ? out : [Math.min(state.currentPageIndex, state.pages.length - 1)];
+}
+
+let lazyZoomToken = 0;
+let lazyZoomTimer = null;
+function scheduleLazyZoomCatchup(token, targetZoom) {
+  clearTimeout(lazyZoomTimer);
+  const runNext = async () => {
+    if (token !== lazyZoomToken || state.zoom !== targetZoom) return;
+    // 優先補畫目前可視範圍內還沒跟上最新縮放的頁面，再依序補畫其餘頁面
+    const vis = getVisiblePageIndices(1);
+    let nextEntry = null;
+    for (const idx of vis) {
+      const p = state.pages[idx];
+      if (p && p._renderedZoom !== targetZoom) { nextEntry = p; break; }
+    }
+    if (!nextEntry) {
+      nextEntry = state.pages.find((p) => p._renderedZoom !== targetZoom);
+    }
+    if (!nextEntry) return;
+    await renderPage(nextEntry, targetZoom, { skipThumb: true });
+    layoutPage(nextEntry);
+    if (token === lazyZoomToken && state.zoom === targetZoom) {
+      lazyZoomTimer = setTimeout(runNext, 16);
+    }
+  };
+  lazyZoomTimer = setTimeout(runNext, 40);
+}
+
 let zoomRunning = false;
 let zoomQueued = null;
 async function setZoom(next, opts) {
@@ -1150,9 +1331,6 @@ async function setZoom(next, opts) {
   }
   zoomRunning = true;
   const oldZoom = state.zoom;
-  // 如果有指定 anchor（兩指縮放的手指中點，螢幕座標），先記下這個點目前對應到
-  // viewerScroll 捲動內容裡的哪個位置，縮放完、頁面尺寸改變之後，再把捲動位置
-  // 反推回去，讓這個點縮放前後都還是停在同一個螢幕位置——體感上就是「以兩指中心為準縮放」。
   let anchorScrollLeftBefore, anchorScrollTopBefore, anchorScreenX, anchorScreenY;
   if (opts && opts.anchor) {
     const viewportRect = viewerScroll.getBoundingClientRect();
@@ -1163,28 +1341,31 @@ async function setZoom(next, opts) {
   }
   state.zoom = next;
   updateZoomLabel();
-  // 縮放（尤其滑鼠滾輪／雙指手勢）動作很頻繁，每次都跳出載入遮罩會一直閃爍、很煩，
-  // 所以縮放不顯示載入中——這個流程本來就快，不需要遮罩擋互動。
+  const token = ++lazyZoomToken;
+  clearTimeout(lazyZoomTimer);
   try {
-    for (const entry of state.pages) {
-      await renderPage(entry, state.zoom, { skipThumb: true });
-      layoutPage(entry);
-    }
+    // 1. 先同步更新全部頁面的顯示尺寸，讓捲動位置立即校正
+    state.pages.forEach((entry) => preLayoutPageForZoom(entry, state.zoom));
     if (opts && opts.anchor) {
-      // 用「加上縮放造成的差額」而不是直接設成算好的絕對值：renderPage 要等 PDF.js
-      // 重繪，這段 await 期間使用者的兩指平移（上面 touchmove 直接調整 scrollLeft/Top
-      // 那段）可能還在繼續跑，用相加的才不會把這段期間使用者手指帶動的捲動蓋掉、產生頓挫感。
       const r = next / oldZoom;
       viewerScroll.scrollLeft += (anchorScrollLeftBefore + anchorScreenX) * (r - 1);
       viewerScroll.scrollTop += (anchorScrollTopBefore + anchorScreenY) * (r - 1);
     } else if (!opts || opts.recenter !== false) {
-      // 手機雙指縮放手勢沒有指定 anchor 時（理論上不會發生，保留當 fallback），或滑鼠／
-      // 按鈕縮放時，才用「整個置中」這個比較粗略的方式；兩指縮放手勢一律會帶 anchor，
-      // 不會跟使用者手指正在帶動的捲動位置打架、畫面被硬拉回正中間。
       centerViewerHorizontally();
-      // 單頁模式下畫面永遠只會有「目前這一頁」一個 row，跟一般連續捲動模式不同，不會有
-      // 「使用者原本捲到文件中間，結果被縮放硬拉回正中間」的問題，所以可以放心直向也置中。
       if (state.viewMode === "single") centerViewerVertically();
+    }
+    // 2. 優先重繪目前看得到的頁面（頁數少時一次畫完；頁數多時其餘頁交給背景逐頁補畫）
+    const priorityIndices = state.pages.length <= 6
+      ? state.pages.map((_, i) => i)
+      : getVisiblePageIndices(1);
+    for (const idx of priorityIndices) {
+      const entry = state.pages[idx];
+      if (!entry || token !== lazyZoomToken) break;
+      await renderPage(entry, state.zoom, { skipThumb: true });
+      layoutPage(entry);
+    }
+    if (token === lazyZoomToken && state.pages.some((p) => p._renderedZoom !== state.zoom)) {
+      scheduleLazyZoomCatchup(token, state.zoom);
     }
   } finally {
     zoomRunning = false;
@@ -1221,11 +1402,21 @@ function computeFitZoom(entry) {
   return Math.min(3, Math.max(0.3, Math.round(fit * 100) / 100));
 }
 
-// 切到單頁模式時，把「目前這一頁」縮放到整頁完整顯示在畫面上，不用使用者自己手動調縮放。
+// 切到單頁模式或點「整頁」時，把目前頁縮放到完整顯示在可視範圍內
 async function fitCurrentPageToViewer() {
-  const entry = state.pages[state.currentPageIndex];
+  const entry = state.pages[state.currentPageIndex] || pickActivePage();
   if (!entry) return;
   await setZoom(computeFitZoom(entry));
+}
+async function fitCurrentPageWidth() {
+  const entry = state.pages[state.currentPageIndex] || pickActivePage();
+  if (!entry) return;
+  const total = getPageRotation(entry);
+  const rotated = total === 90 || total === 270;
+  const nativeW = (rotated ? entry.cropH : entry.cropW) * CSS_SCALE;
+  const avail = viewerAvailableSize();
+  const fit = Math.min(3, Math.max(0.3, Math.round(((avail.w - 16) / nativeW) * 100) / 100));
+  await setZoom(fit);
 }
 
 // 按住 Ctrl 滾滾輪可以縮放（觸控板兩指縮放手勢瀏覽器也會視為 ctrlKey+wheel，一併支援）。
@@ -1363,9 +1554,7 @@ $("#btnNextPage").addEventListener("click", () => goToPage(state.currentPageInde
 function setViewMode(mode) {
   state.viewMode = mode;
   document.querySelectorAll(".view-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === mode));
-  $("#pageNav").hidden = mode === "scroll";
   applyViewMode();
-  // 按下「單頁顯示」時，把目前這一頁縮放到整頁完整顯示在畫面上，不用使用者自己手動調縮放。
   if (mode === "single") fitCurrentPageToViewer();
 }
 
@@ -1385,37 +1574,88 @@ function applyViewMode() {
       p.rowEl.style.display = i === state.currentPageIndex || i === state.currentPageIndex + 1 ? "" : "none";
     });
   }
-  // 並排模式下 page-row 不保留暫放區寬度（見 pasteboardMarginPx），切換模式時要重算，
-  // 不然寬度會停留在切換前的狀態
   state.pages.forEach((p) => layoutPage(p));
   centerViewerHorizontally();
-  // 單頁模式下畫面永遠只有「目前這一頁」一個 row，不是連續捲動模式那種使用者自己捲到
-  // 文件中間的情況，直向置中不會打斷使用者原本的捲動位置，可以放心每次都重算。
   if (state.viewMode === "single") centerViewerVertically();
+  if (state.pages[state.currentPageIndex]) highlightCurrent(state.pages[state.currentPageIndex]);
   updateViewNav();
+  if (state.pages.some((p) => p._renderedZoom !== state.zoom)) {
+    scheduleLazyZoomCatchup(lazyZoomToken, state.zoom);
+  }
 }
 
 function goToPage(idx) {
   if (!state.pages.length) return false;
   const clamped = Math.max(0, Math.min(idx, state.pages.length - 1));
-  if (clamped === state.currentPageIndex) return false;
   state.currentPageIndex = clamped;
+  if (state.viewMode === "scroll") {
+    const entry = state.pages[clamped];
+    if (entry && entry.outerEl) entry.outerEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    highlightCurrent(entry);
+    updateViewNav();
+    return true;
+  }
   applyViewMode();
   return true;
 }
 
 function updateViewNav() {
-  if (state.viewMode === "scroll" || !state.pages.length) return;
   const total = state.pages.length;
-  const cur = state.currentPageIndex;
-  if (state.viewMode === "spread" && cur + 1 < total) {
-    $("#pageIndicator").textContent = `${cur + 1}-${cur + 2} / ${total}`;
-  } else {
-    $("#pageIndicator").textContent = `${cur + 1} / ${total}`;
+  $("#pageNav").hidden = total === 0;
+  if (!total) return;
+  const cur = Math.max(0, Math.min(state.currentPageIndex, total - 1));
+  const jumpInput = $("#pageJumpInput");
+  if (jumpInput && document.activeElement !== jumpInput) {
+    jumpInput.max = String(total);
+    jumpInput.value = String(cur + 1);
   }
+  $("#pageIndicator").textContent = String(total);
   $("#btnPrevPage").disabled = cur <= 0;
   $("#btnNextPage").disabled = state.viewMode === "spread" ? cur + 2 >= total : cur >= total - 1;
 }
+
+$("#pageJumpInput").addEventListener("change", () => {
+  const n = Math.round(Number($("#pageJumpInput").value));
+  if (Number.isFinite(n) && n >= 1) goToPage(n - 1);
+  else updateViewNav();
+});
+$("#pageJumpInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.target.blur();
+  }
+});
+
+// 捲動主畫面時自動同步目前頁碼與左側縮圖高亮，並觸發可視頁的懶載入縮放重繪
+let scrollSyncRaf = 0;
+viewerScroll.addEventListener("scroll", () => {
+  if (scrollSyncRaf) return;
+  scrollSyncRaf = requestAnimationFrame(() => {
+    scrollSyncRaf = 0;
+    if (!state.pages.length) return;
+    if (state.viewMode === "scroll") {
+      const vr = viewerScroll.getBoundingClientRect();
+      const midY = vr.top + vr.height / 2;
+      let bestIdx = 0, bestDist = Infinity;
+      for (let i = 0; i < state.pages.length; i++) {
+        const r = state.pages[i].outerEl.getBoundingClientRect();
+        const dist = Math.abs((r.top + r.bottom) / 2 - midY);
+        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+      }
+      if (bestIdx !== state.currentPageIndex) {
+        state.currentPageIndex = bestIdx;
+        const entry = state.pages[bestIdx];
+        if (entry && entry.thumbItemEl) {
+          highlightCurrent(entry);
+          entry.thumbItemEl.scrollIntoView({ block: "nearest" });
+        }
+        updateViewNav();
+      }
+    }
+    if (state.pages.some((p) => p._renderedZoom !== state.zoom)) {
+      scheduleLazyZoomCatchup(lazyZoomToken, state.zoom);
+    }
+  });
+}, { passive: true });
 
 let wheelLock = false;
 viewer.addEventListener(
@@ -2064,9 +2304,20 @@ function drawSingleSelectionUI(ctx, obj, scale, outlineOnly) {
   ctx.strokeRect(b.x * scale, b.y * scale, b.w * scale, b.h * scale);
   ctx.setLineDash([]);
   if (transformable && !outlineOnly) {
-    const hx = (b.x + b.w) * scale, hy = (b.y + b.h) * scale;
+    // 四個角落皆提供縮放把手，四個方向都能直接拖曳調整大小
     ctx.fillStyle = "#2563eb";
-    ctx.fillRect(hx - 5, hy - 5, 10, 10);
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 1.5;
+    const corners = [
+      [b.x * scale, b.y * scale],
+      [(b.x + b.w) * scale, b.y * scale],
+      [b.x * scale, (b.y + b.h) * scale],
+      [(b.x + b.w) * scale, (b.y + b.h) * scale],
+    ];
+    corners.forEach(([hx, hy]) => {
+      ctx.fillRect(hx - 4.5, hy - 4.5, 9, 9);
+      ctx.strokeRect(hx - 4.5, hy - 4.5, 9, 9);
+    });
 
     const cx = (b.x + b.w / 2) * scale;
     const topY = b.y * scale;
@@ -2252,13 +2503,24 @@ function hitTest(entry, pt) {
 function isTransformable(obj) {
   return obj.type === "text" || obj.type === "rect" || obj.type === "ellipse" || obj.type === "cloud" || obj.type === "image" || obj.type === "indexmark";
 }
-function isOnResizeHandle(obj, pt) {
-  if (!isTransformable(obj) || obj.locked) return false;
+function hitResizeHandle(obj, pt) {
+  if (!isTransformable(obj) || obj.locked) return null;
   const lp = toLocalPointForBBox(obj, pt);
   const b = getBBox(obj);
-  const hx = b.x + b.w, hy = b.y + b.h;
   const thresholdPt = handleThresholdPt();
-  return Math.hypot(lp.x - hx, lp.y - hy) <= thresholdPt;
+  const handles = [
+    ["se", b.x + b.w, b.y + b.h],
+    ["nw", b.x, b.y],
+    ["ne", b.x + b.w, b.y],
+    ["sw", b.x, b.y + b.h],
+  ];
+  for (const [key, hx, hy] of handles) {
+    if (Math.hypot(lp.x - hx, lp.y - hy) <= thresholdPt) return key;
+  }
+  return null;
+}
+function isOnResizeHandle(obj, pt) {
+  return !!hitResizeHandle(obj, pt);
 }
 function isOnRotateHandle(obj, pt) {
   if (!isTransformable(obj) || obj.locked) return false;
@@ -2296,6 +2558,74 @@ function eventToPoint(entry, e) {
   // overlay-canvas 四周比頁面多留了一截暫放區（見 PASTEBOARD_MARGIN），要先扣掉才會對齊
   return { x: xy.x / s + entry.cropX - PASTEBOARD_MARGIN, y: xy.y / s + entry.cropY - PASTEBOARD_MARGIN };
 }
+
+/* ---------------- 空白鍵＋左鍵拖曳 ／ 滑鼠中鍵拖曳平移畫布 ---------------- */
+let spacePanKey = false;
+let canvasPanState = null;
+
+function isTypingElement(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && !e.repeat && !isTypingElement(document.activeElement) && state.pages.length) {
+    e.preventDefault();
+    spacePanKey = true;
+    viewer.classList.add("space-panning");
+  }
+});
+document.addEventListener("keyup", (e) => {
+  if (e.code === "Space" && spacePanKey) {
+    spacePanKey = false;
+    viewer.classList.remove("space-panning");
+  }
+});
+window.addEventListener("blur", () => {
+  spacePanKey = false;
+  canvasPanState = null;
+  viewer.classList.remove("space-panning", "canvas-panning");
+});
+
+viewerScroll.addEventListener(
+  "pointerdown",
+  (e) => {
+    const isMiddle = e.button === 1;
+    const isSpaceDrag = e.button === 0 && spacePanKey;
+    if (!isMiddle && !isSpaceDrag) return;
+    if (!state.pages.length) return;
+    e.preventDefault();
+    e.stopPropagation();
+    canvasPanState = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: viewerScroll.scrollLeft,
+      scrollTop: viewerScroll.scrollTop,
+    };
+    viewer.classList.add("canvas-panning");
+    try { viewerScroll.setPointerCapture(e.pointerId); } catch (err) {}
+  },
+  true
+);
+viewerScroll.addEventListener("pointermove", (e) => {
+  if (!canvasPanState) return;
+  e.preventDefault();
+  viewerScroll.scrollLeft = canvasPanState.scrollLeft - (e.clientX - canvasPanState.startX);
+  viewerScroll.scrollTop = canvasPanState.scrollTop - (e.clientY - canvasPanState.startY);
+});
+["pointerup", "pointercancel"].forEach((ev) =>
+  viewerScroll.addEventListener(ev, (e) => {
+    if (!canvasPanState) return;
+    try { viewerScroll.releasePointerCapture(canvasPanState.pointerId); } catch (err) {}
+    canvasPanState = null;
+    viewer.classList.remove("canvas-panning");
+  })
+);
+viewerScroll.addEventListener("auxclick", (e) => {
+  if (e.button === 1) e.preventDefault();
+});
 
 /* ---------------- 標註互動：建立 / 選取 / 移動 / 縮放 ---------------- */
 
@@ -2445,7 +2775,7 @@ function startPanInteraction(entry, pt, e) {
   const sel = state.selected;
   const selHere = sel && sel.entry === entry ? sel : null;
 
-  // 只選一個物件時，先檢查是不是點在它自己的旋轉／縮放把手上
+  // 只選一個物件時，先檢查是不是點在它自己的旋轉／四角縮放把手上
   if (selHere && selHere.objs.length === 1) {
     const obj = selHere.objs[0];
     if (isOnRotateHandle(obj, pt)) {
@@ -2455,9 +2785,10 @@ function startPanInteraction(entry, pt, e) {
       };
       return;
     }
-    if (isOnResizeHandle(obj, pt)) {
+    const handle = hitResizeHandle(obj, pt);
+    if (handle) {
       state.interaction = {
-        mode: "resize", entry, obj, start: pt, orig: cloneObj(obj),
+        mode: "resize", entry, obj, handle, start: pt, orig: cloneObj(obj),
         historyPushed: false,
       };
       return;
@@ -2498,12 +2829,30 @@ function startPanInteraction(entry, pt, e) {
       setSelected(null);
       state.interaction = null;
     } else {
-      setSelected({ entry, objs });
       // 鎖定的物件不能被拖曳移動；多選時其餘未鎖定的物件仍可以一起拖走
       const moveTargets = objs.filter((o) => !o.locked);
-      state.interaction = moveTargets.length
-        ? { mode: "move", entry, objs: moveTargets, start: pt, origs: moveTargets.map(cloneObj), historyPushed: false }
-        : null;
+      if (e && e.altKey && moveTargets.length) {
+        // 按住 Alt + 拖曳：直接原地拉出一份複製品並改拖曳複製品，貼重複標籤／圖片超順手
+        pushHistory(entry);
+        const clones = moveTargets.map((o) => {
+          const c = JSON.parse(JSON.stringify(o, cleanReplacer));
+          c.id = newId();
+          c.locked = false;
+          if (o._img) c._img = o._img;
+          entry.objects.push(c);
+          return c;
+        });
+        setSelected({ entry, objs: clones });
+        state.interaction = {
+          mode: "move", entry, objs: clones, start: pt,
+          origs: clones.map(cloneObj), historyPushed: true,
+        };
+      } else {
+        setSelected({ entry, objs });
+        state.interaction = moveTargets.length
+          ? { mode: "move", entry, objs: moveTargets, start: pt, origs: moveTargets.map(cloneObj), historyPushed: false }
+          : null;
+      }
     }
     redraw(entry);
     renderToolOptions();
@@ -2679,6 +3028,7 @@ function clearCropPreview(entry) {
 const CROP_MIN_SIZE = 20; // 裁切範圍的最小寬／高（point），避免拖成一個點或負值
 
 async function applyCrop(entry, x, y, w, h) {
+  pushHistory(entry);
   entry.cropX = x;
   entry.cropY = y;
   entry.cropW = Math.max(CROP_MIN_SIZE, w);
@@ -2878,7 +3228,7 @@ function updateInteraction(pt, e) {
       pushHistory(it.entry);
       it.historyPushed = true;
     }
-    const guides = applyResize(it.obj, it.orig, pt, ctrl, it.entry);
+    const guides = applyResize(it.obj, it.orig, pt, ctrl, it.entry, it.handle || "se");
     redraw(it.entry);
     drawSnapGuidesPreview(it.entry, guides);
     return; // 吸附輔助線畫在 overlay canvas 上，上面那行 redraw 已經重畫過一次了
@@ -3000,68 +3350,68 @@ function applyMove(obj, orig, dx, dy) {
 
 const RESIZE_MIN_SIZE = 10; // 單一物件縮放把手拖曳時的最小寬／高（point）
 
-function applyResize(obj, orig, pt, ctrl, entry) {
-  // 旋轉中心要用「目前」的中心即時算，不能用拖曳開始那一刻的舊值：縮放把手拖曳中 w/h 會
-  // 一直變化，物件的中心點也跟著一直變化，畫面上旋轉時實際用的錨點就是這個會變動的中心；
-  // 如果拿拖曳開始時的舊中心點去反轉滑鼠座標，隨著w/h改變只會越轉越偏，基準點就跑掉了。
-  const center = getCenter(obj);
-  // 索引符號的外框不隨旋轉變化，縮放要用原始座標，不能先轉回局部座標（見 toLocalPointForBBox 的說明）
-  const lp = obj.type === "indexmark" ? pt : rotatePointAround(pt, center, obj.rotation || 0);
+function applyResize(obj, orig, pt, ctrl, entry, handle) {
+  handle = handle || "se";
+  const sx = handle.includes("w") ? -1 : 1;
+  const sy = handle.includes("n") ? -1 : 1;
+  const origB = getBBox(orig);
+  // 對角（被釘住不動的基準角）在未旋轉局部座標裡的位置
+  const ax = sx > 0 ? origB.x : origB.x + origB.w;
+  const ay = sy > 0 ? origB.y : origB.y + origB.h;
+  const rotation = obj.type === "indexmark" ? 0 : orig.rotation || 0;
+  const anchorWorld = localCornerToWorld(orig, { x: ax, y: ay });
+  const localPt = rotation ? rotatePointAround(pt, anchorWorld, rotation) : pt;
+  const dxL = localPt.x - anchorWorld.x;
+  const dyL = localPt.y - anchorWorld.y;
+
   let guides = [];
   if (obj.type === "text") {
-    const d0 = Math.hypot(orig._w || 40, orig._h || 20) || 1;
-    const d1 = Math.hypot(lp.x - orig.x, lp.y - orig.y);
+    const d0 = Math.hypot(origB.w || 40, origB.h || 20) || 1;
+    const d1 = Math.hypot(dxL, dyL);
     const ratio = Math.max(0.2, Math.min(6, d1 / d0));
     obj.fontSize = Math.max(6, Math.min(300, orig.fontSize * ratio));
   } else if (obj.type === "indexmark") {
-    let w = lp.x - obj.x;
-    let h = lp.y - obj.y;
-    const m = Math.max(Math.abs(w), Math.abs(h));
-    obj.w = (w < 0 ? -1 : 1) * m;
-    obj.h = (h < 0 ? -1 : 1) * m;
+    const m = Math.max(RESIZE_MIN_SIZE, Math.max(sx * dxL, sy * dyL));
+    obj.w = m;
+    obj.h = m;
+    obj.x = sx > 0 ? ax : ax - m;
+    obj.y = sy > 0 ? ay : ay - m;
   } else {
-    // 其他物件（矩形／圖片等）縮放時固定以左上角（obj.x, obj.y）為基準點，右下角把手只能把
-    // 寬高拉大或縮小到最小值，不能縮過頭變成負的——否則寬高變號會讓 getBBox 的
-    // Math.min/abs 把左上角跟右下角互換，看起來就像基準點突然跳到對角去。
-    let x1 = lp.x, y1 = lp.y;
-    const ratioLocked = ctrl && obj.type === "image" && orig.w;
-    if (entry) {
-      if (ratioLocked) {
-        // 鎖定比例時 x、y 不是獨立的兩軸，用專門的函式吸附（吸附後仍維持比例精確）
-        const snap = computeResizeSnapRatioLocked(entry, obj, x1, y1, orig.h / orig.w);
-        x1 = snap.x1;
-        y1 = snap.y1;
+    let mx = ax + dxL;
+    let my = ay + dyL;
+    const ratioLocked = ctrl && obj.type === "image" && origB.w > 0;
+    // 未旋轉時支援四個角各自吸附到同頁其他物件的邊緣／中心
+    if (entry && !rotation) {
+      if (ratioLocked && handle === "se") {
+        const snap = computeResizeSnapRatioLocked(entry, obj, mx, my, origB.h / origB.w);
+        mx = snap.x1;
+        my = snap.y1;
         guides = snap.guides;
       } else {
-        const snap = computeResizeSnap(entry, obj, x1, y1);
-        x1 = snap.x1;
-        y1 = snap.y1;
+        const snap = computeResizeSnap(entry, obj, mx, my);
+        mx = snap.x1;
+        my = snap.y1;
         guides = snap.guides;
       }
     }
-    let w = Math.max(RESIZE_MIN_SIZE, x1 - obj.x);
-    let h = Math.max(RESIZE_MIN_SIZE, y1 - obj.y);
+    let w = Math.max(RESIZE_MIN_SIZE, sx * (mx - ax));
+    let h = Math.max(RESIZE_MIN_SIZE, sy * (my - ay));
     if (ratioLocked) {
-      h = w * (orig.h / orig.w); // 按住 Ctrl：維持圖片原本的長寬比例（用鉗制過的 w 重算一次，避免最小尺寸鉗制把比例帶偏）
+      h = w * (origB.h / origB.w);
     }
     obj.w = w;
     obj.h = h;
-    keepResizeAnchorFixed(obj, orig, w, h);
+    if (rotation) {
+      // 旋轉物件縮放時，以對角 anchorWorld 為固定點反推新的中心與左上角座標，完全不跑位
+      const cOff = rotatePointAround({ x: (sx * w) / 2, y: (sy * h) / 2 }, { x: 0, y: 0 }, -rotation);
+      obj.x = anchorWorld.x + cOff.x - w / 2;
+      obj.y = anchorWorld.y + cOff.y - h / 2;
+    } else {
+      obj.x = sx > 0 ? ax : ax - w;
+      obj.y = sy > 0 ? ay : ay - h;
+    }
   }
   return guides;
-}
-
-// 物件轉過角度時，縮放中心是會隨 w/h 即時改變的「目前」中心（見上面 applyResize 開頭的說明，
-// 那是為了讓拖曳中的那個角緊貼滑鼠），但這會讓沒被拖動的那個角（基準點）繞著移動中的中心
-// 一起被轉，畫面上看起來基準點自己跑掉了。這裡用拖曳開始那一刻、基準點原本所在的世界座標
-// 當作目標，每一步都反推 obj.x/y，讓基準點在畫面上整個拖曳過程都釘死在原地不動。
-function keepResizeAnchorFixed(obj, orig, w, h) {
-  const rotation = orig.rotation || 0;
-  if (!rotation) return; // 沒有旋轉時 obj.x/y 本來就等於世界座標，不需要額外校正
-  const anchorWorld = localCornerToWorld(orig, { x: orig.x, y: orig.y });
-  const rotVec = rotatePointAround({ x: -w / 2, y: -h / 2 }, { x: 0, y: 0 }, -rotation);
-  obj.x = anchorWorld.x - w / 2 - rotVec.x;
-  obj.y = anchorWorld.y - h / 2 - rotVec.y;
 }
 
 // 多選群組縮放：以整體外框的左上角為錨點，把每個物件的位置／大小依 sx,sy 比例縮放
@@ -3448,8 +3798,21 @@ $("#wmImageClear").addEventListener("click", () => {
   updateWatermarkModalUI();
 });
 
+function updateWatermarkRangeLabels() {
+  const isImg = !!wmState.dataUrl;
+  const sEl = $("#wmSizeVal"), oEl = $("#wmOpacityVal"), rEl = $("#wmRotateVal");
+  if (sEl) sEl.textContent = $("#wmSize").value + (isImg ? "px" : "pt");
+  if (oEl) oEl.textContent = $("#wmOpacity").value + "%";
+  if (rEl) rEl.textContent = $("#wmRotate").value + "°";
+}
+["wmSize", "wmOpacity", "wmRotate"].forEach((id) => {
+  const el = $("#" + id);
+  if (el) el.addEventListener("input", updateWatermarkRangeLabels);
+});
+
 function openWatermarkModal() {
   updateWatermarkModalUI();
+  updateWatermarkRangeLabels();
   $("#watermarkModal").hidden = false;
 }
 $("#wmCancel").addEventListener("click", () => ($("#watermarkModal").hidden = true));
@@ -3536,6 +3899,12 @@ function updatePageNumberModalUI() {
 }
 $("#pnBgEnabled").addEventListener("change", updatePageNumberModalUI);
 
+function updatePageNumberRangeLabels() {
+  const el = $("#pnSizeVal");
+  if (el) el.textContent = $("#pnSize").value + "pt";
+}
+$("#pnSize").addEventListener("input", updatePageNumberRangeLabels);
+
 function openPageNumberModal() {
   const cfg = state.pageNumberConfig;
   $("#pnFormat").value = cfg ? cfg.format : "{n}";
@@ -3547,6 +3916,7 @@ function openPageNumberModal() {
   $("#pnBgEnabled").checked = cfg && cfg.bg ? !!cfg.bg.enabled : false;
   $("#pnBgColor").value = cfg && cfg.bg ? cfg.bg.color : "#ffeb3b";
   updatePageNumberModalUI();
+  updatePageNumberRangeLabels();
   $("#pageNumberModal").hidden = false;
 }
 $("#pnCancel").addEventListener("click", () => ($("#pageNumberModal").hidden = true));
@@ -3577,7 +3947,7 @@ $("#pnApply").addEventListener("click", () => {
   toast(`已套用頁碼到 ${state.pages.length} 頁`);
 });
 
-/* ---------------- 復原 ---------------- */
+/* ---------------- 復原／重做（全域跨頁堆疊） ---------------- */
 
 // 序列化物件時去掉內部暫存欄位（例如圖片物件快取的 <img> 元素、文字編輯中旗標），
 // 避免存進復原紀錄／IndexedDB 時序列化失敗或留下過期狀態。
@@ -3589,48 +3959,217 @@ function cleanObjects(objects) {
   return JSON.parse(JSON.stringify(objects, cleanReplacer));
 }
 
+function capturePageSnapshot(entry) {
+  ensureCropDefaults(entry);
+  return {
+    entry,
+    data: JSON.stringify({
+      objects: entry.objects,
+      watermark: entry.watermark,
+      userDelta: entry.userDelta,
+      cropX: entry.cropX,
+      cropY: entry.cropY,
+      cropW: entry.cropW,
+      cropH: entry.cropH,
+    }, cleanReplacer),
+  };
+}
+
+function updateHistoryButtons() {
+  const validUndo = state.undoStack.filter((s) => state.pages.includes(s.entry));
+  const validRedo = state.redoStack.filter((s) => state.pages.includes(s.entry));
+  state.undoStack = validUndo;
+  state.redoStack = validRedo;
+  const u = $("#btnUndo"), r = $("#btnRedo");
+  if (u) u.disabled = !state.undoStack.length;
+  if (r) r.disabled = !state.redoStack.length;
+}
+
 function pushHistory(entry) {
-  entry.history.push(JSON.stringify({ objects: entry.objects, watermark: entry.watermark }, cleanReplacer));
-  if (entry.history.length > 30) entry.history.shift();
+  state.undoStack.push(capturePageSnapshot(entry));
+  if (state.undoStack.length > 50) state.undoStack.shift();
+  state.redoStack = [];
   state.lastActiveEntry = entry;
-  $("#btnUndo").disabled = false;
+  updateHistoryButtons();
   scheduleAutosave();
 }
 
-function undo() {
-  const entry = state.lastActiveEntry;
-  if (!entry || !entry.history.length) return;
-  const snap = JSON.parse(entry.history.pop());
-  entry.objects = snap.objects;
-  entry.watermark = snap.watermark;
+async function applyPageSnapshot(snap) {
+  const entry = snap.entry;
+  if (!entry || !state.pages.includes(entry)) return;
+  const parsed = JSON.parse(snap.data);
+  const cropChanged =
+    Math.abs((entry.cropX || 0) - (parsed.cropX || 0)) > 0.01 ||
+    Math.abs((entry.cropY || 0) - (parsed.cropY || 0)) > 0.01 ||
+    Math.abs((entry.cropW || 0) - (parsed.cropW || 0)) > 0.01 ||
+    Math.abs((entry.cropH || 0) - (parsed.cropH || 0)) > 0.01;
+  const rotChanged = entry.userDelta !== parsed.userDelta;
+  entry.objects = parsed.objects;
+  entry.watermark = parsed.watermark;
+  if (parsed.userDelta != null) entry.userDelta = parsed.userDelta;
+  if (parsed.cropW != null) {
+    entry.cropX = parsed.cropX;
+    entry.cropY = parsed.cropY;
+    entry.cropW = parsed.cropW;
+    entry.cropH = parsed.cropH;
+  }
   if (state.selected && state.selected.entry === entry) {
     const stillExisting = state.selected.objs
       .map((o) => entry.objects.find((o2) => o2.id === o.id))
       .filter(Boolean);
     setSelected(stillExisting.length ? { entry, objs: stillExisting } : null);
   }
-  redraw(entry);
+  if (cropChanged) {
+    await renderPage(entry, state.zoom, { skipThumb: true });
+    layoutPage(entry);
+    renderThumb(entry);
+  } else {
+    if (rotChanged) layoutPage(entry);
+    redraw(entry);
+    if (rotChanged) renderThumb(entry);
+  }
   renderToolOptions();
   scheduleAutosave();
-  if (!entry.history.length) $("#btnUndo").disabled = true;
 }
+
+async function undo() {
+  updateHistoryButtons();
+  if (!state.undoStack.length) return;
+  const snap = state.undoStack.pop();
+  state.redoStack.push(capturePageSnapshot(snap.entry));
+  await applyPageSnapshot(snap);
+  updateHistoryButtons();
+}
+
+async function redo() {
+  updateHistoryButtons();
+  if (!state.redoStack.length) return;
+  const snap = state.redoStack.pop();
+  state.undoStack.push(capturePageSnapshot(snap.entry));
+  await applyPageSnapshot(snap);
+  updateHistoryButtons();
+}
+
 $("#btnUndo").addEventListener("click", undo);
+$("#btnRedo").addEventListener("click", redo);
+
+function duplicateSelectedObjects() {
+  if (!state.selected || !state.selected.objs.length) return;
+  const { entry, objs } = state.selected;
+  pushHistory(entry);
+  const offset = 16;
+  const clones = objs.map((o) => {
+    const c = JSON.parse(JSON.stringify(o, cleanReplacer));
+    c.id = newId();
+    c.locked = false;
+    if (o._img) c._img = o._img;
+    if (c.points) c.points = c.points.map((p) => ({ x: p.x + offset, y: p.y + offset }));
+    else { c.x = (c.x || 0) + offset; c.y = (c.y || 0) + offset; }
+    entry.objects.push(c);
+    return c;
+  });
+  setSelected({ entry, objs: clones });
+  redraw(entry);
+  renderToolOptions();
+  toast(clones.length > 1 ? `已複製 ${clones.length} 個物件` : "已複製物件");
+}
+
+let nudgeHistoryTimer = null;
+let nudgeHistoryEntry = null;
+function nudgeSelectedObjects(sdx, sdy) {
+  if (!state.selected || !state.selected.objs.length) return;
+  const { entry, objs } = state.selected;
+  const movable = objs.filter((o) => !o.locked);
+  if (!movable.length) return;
+  if (nudgeHistoryEntry !== entry) {
+    pushHistory(entry);
+    nudgeHistoryEntry = entry;
+  }
+  clearTimeout(nudgeHistoryTimer);
+  nudgeHistoryTimer = setTimeout(() => { nudgeHistoryEntry = null; }, 500);
+  // 依頁面目前旋轉角度反推未旋轉座標的位移，讓方向鍵永遠對應「畫面上看到的方向」
+  const pageRot = getPageRotation(entry);
+  const d = pageRot ? rotatePointAround({ x: sdx, y: sdy }, { x: 0, y: 0 }, pageRot) : { x: sdx, y: sdy };
+  movable.forEach((o) => {
+    if (o.points) o.points = o.points.map((p) => ({ x: p.x + d.x, y: p.y + d.y }));
+    else { o.x = (o.x || 0) + d.x; o.y = (o.y || 0) + d.y; }
+  });
+  redraw(entry);
+}
+
+function closeTopModal() {
+  const modals = ["#shortcutsModal", "#exportModal", "#toolLibraryModal", "#imageCropModal", "#blankPageModal", "#pageNumberModal", "#watermarkModal"];
+  for (const sel of modals) {
+    const el = $(sel);
+    if (el && !el.hidden) { el.hidden = true; return true; }
+  }
+  return false;
+}
 
 document.addEventListener("keydown", (e) => {
-  const tag = document.activeElement && document.activeElement.tagName;
-  const typing = tag === "INPUT" || tag === "TEXTAREA";
-  if (e.ctrlKey && e.key.toLowerCase() === "z" && !typing) {
+  const typing = isTypingElement(document.activeElement);
+  const key = e.key.toLowerCase();
+
+  if (e.key === "Escape") {
+    if ($("#settingsPopover") && !$("#settingsPopover").hidden) {
+      $("#settingsPopover").hidden = true;
+      return;
+    }
+    if (closeTopModal()) return;
+    if (state.currentTextEditor) { closeTextEditor(true); return; }
+    if (state.selected) {
+      const prev = state.selected.entry;
+      setSelected(null);
+      redraw(prev);
+      renderToolOptions();
+      return;
+    }
+    if (state.tool !== "pan") setTool("pan");
+    return;
+  }
+
+  if (typing) return;
+
+  if (e.ctrlKey && !e.shiftKey && key === "z") {
     e.preventDefault();
     undo();
-  } else if ((e.key === "Delete" || e.key === "Backspace") && !typing && state.selected) {
+  } else if ((e.ctrlKey && key === "y") || (e.ctrlKey && e.shiftKey && key === "z")) {
+    e.preventDefault();
+    redo();
+  } else if ((e.key === "Delete" || e.key === "Backspace") && state.selected) {
     e.preventDefault();
     deleteSelected();
-  } else if (e.ctrlKey && e.key.toLowerCase() === "c" && !typing && state.selected) {
+  } else if (e.ctrlKey && key === "c" && state.selected) {
     e.preventDefault();
     copySelectedObject();
+  } else if (e.ctrlKey && key === "d" && state.selected) {
+    e.preventDefault();
+    duplicateSelectedObjects();
+  } else if (e.ctrlKey && key === "a" && state.pages.length) {
+    e.preventDefault();
+    const entry = pickActivePage();
+    if (entry && entry.objects.length) {
+      setTool("pan");
+      setSelected({ entry, objs: entry.objects.slice() });
+      redraw(entry);
+      renderToolOptions();
+    }
+  } else if (state.selected && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+    e.preventDefault();
+    const step = e.shiftKey ? 10 : 1;
+    const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+    const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+    nudgeSelectedObjects(dx, dy);
+  } else if (!e.ctrlKey && !e.altKey && !e.metaKey) {
+    const toolMap = { v: "pan", t: "text", h: "highlight", p: "pen", r: "shape", c: "crop" };
+    if (toolMap[key] && !hiddenTools.has(toolMap[key])) {
+      e.preventDefault();
+      setTool(toolMap[key]);
+    } else if (e.key === "?") {
+      e.preventDefault();
+      $("#shortcutsModal").hidden = false;
+    }
   }
-  // Ctrl+V 不在這裡處理：交給下面的瀏覽器原生 paste 事件，才讀得到「電腦目前真正的剪貼簿內容」
-  // （keydown 事件本身拿不到剪貼簿資料），這樣從系統其他地方複製文字／圖片過來，貼上才會生效。
 });
 
 /* ---------------- 複製／貼上選取的物件（Ctrl+C／Ctrl+V） ----------------
@@ -4049,7 +4588,7 @@ function todayISO() {
   const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
-function addRangeInput(container, label, value, min, max, onChange) {
+function addRangeInput(container, label, value, min, max, onChange, unit) {
   const l = document.createElement("label");
   l.textContent = label;
   const input = document.createElement("input");
@@ -4057,8 +4596,17 @@ function addRangeInput(container, label, value, min, max, onChange) {
   input.min = min;
   input.max = max;
   input.value = value;
-  input.addEventListener("input", () => onChange(Number(input.value)));
+  const valSpan = document.createElement("span");
+  valSpan.className = "range-val";
+  const u = unit == null ? "" : unit;
+  valSpan.textContent = Math.round(value) + u;
+  input.addEventListener("input", () => {
+    const v = Number(input.value);
+    valSpan.textContent = Math.round(v) + u;
+    onChange(v);
+  });
   l.appendChild(input);
+  l.appendChild(valSpan);
   container.appendChild(l);
   return input;
 }
@@ -4098,25 +4646,111 @@ function addDeleteButton(container) {
   container.appendChild(b);
 }
 
+function alignSelectedObjects(entry, objs, mode) {
+  const targets = objs.filter((o) => !o.locked);
+  if (targets.length < 2) return;
+  pushHistory(entry);
+  const boxes = targets.map((o) => ({ o, b: getBBox(o) }));
+  const minX = Math.min(...boxes.map((x) => x.b.x));
+  const maxX = Math.max(...boxes.map((x) => x.b.x + x.b.w));
+  const minY = Math.min(...boxes.map((x) => x.b.y));
+  const maxY = Math.max(...boxes.map((x) => x.b.y + x.b.h));
+  const midX = (minX + maxX) / 2;
+  const midY = (minY + maxY) / 2;
+  const shiftObj = (o, dx, dy) => {
+    if (!dx && !dy) return;
+    if (o.points) o.points = o.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+    else { o.x += dx; o.y += dy; }
+  };
+
+  if (mode === "left") boxes.forEach(({ o, b }) => shiftObj(o, minX - b.x, 0));
+  else if (mode === "centerX") boxes.forEach(({ o, b }) => shiftObj(o, midX - (b.x + b.w / 2), 0));
+  else if (mode === "right") boxes.forEach(({ o, b }) => shiftObj(o, maxX - (b.x + b.w), 0));
+  else if (mode === "top") boxes.forEach(({ o, b }) => shiftObj(o, 0, minY - b.y));
+  else if (mode === "centerY") boxes.forEach(({ o, b }) => shiftObj(o, 0, midY - (b.y + b.h / 2)));
+  else if (mode === "bottom") boxes.forEach(({ o, b }) => shiftObj(o, 0, maxY - (b.y + b.h)));
+  else if (mode === "sameW" || mode === "sameH") {
+    const sized = boxes.filter(({ o }) => o.w != null && o.h != null && o.type !== "text");
+    if (sized.length < 2) return;
+    const refW = Math.abs(sized[0].o.w), refH = Math.abs(sized[0].o.h);
+    sized.slice(1).forEach(({ o }) => {
+      if (o.type === "indexmark") {
+        const s = mode === "sameW" ? refW : refH;
+        o.w = s; o.h = s;
+      } else if (o.type === "image") {
+        // 圖片等比例縮放到相同寬度或高度，避免照片被拉扁變形
+        const ratio = Math.abs(o.h) / Math.max(1, Math.abs(o.w));
+        if (mode === "sameW") { o.w = refW; o.h = refW * ratio; }
+        else { o.h = refH; o.w = refH / ratio; }
+      } else {
+        if (mode === "sameW") o.w = refW;
+        else o.h = refH;
+      }
+    });
+  } else if (mode === "distH" && boxes.length >= 3) {
+    boxes.sort((a, b) => a.b.x - b.b.x);
+    const totalW = boxes.reduce((sum, x) => sum + x.b.w, 0);
+    const span = (boxes[boxes.length - 1].b.x + boxes[boxes.length - 1].b.w) - boxes[0].b.x;
+    const gap = (span - totalW) / (boxes.length - 1);
+    let cursor = boxes[0].b.x + boxes[0].b.w + gap;
+    for (let i = 1; i < boxes.length - 1; i++) {
+      shiftObj(boxes[i].o, cursor - boxes[i].b.x, 0);
+      cursor += boxes[i].b.w + gap;
+    }
+  } else if (mode === "distV" && boxes.length >= 3) {
+    boxes.sort((a, b) => a.b.y - b.b.y);
+    const totalH = boxes.reduce((sum, x) => sum + x.b.h, 0);
+    const span = (boxes[boxes.length - 1].b.y + boxes[boxes.length - 1].b.h) - boxes[0].b.y;
+    const gap = (span - totalH) / (boxes.length - 1);
+    let cursor = boxes[0].b.y + boxes[0].b.h + gap;
+    for (let i = 1; i < boxes.length - 1; i++) {
+      shiftObj(boxes[i].o, 0, cursor - boxes[i].b.y);
+      cursor += boxes[i].b.h + gap;
+    }
+  }
+  redraw(entry);
+}
+
 function buildMultiObjectPanel(objs, entry) {
   const info = document.createElement("span");
-  info.style.cssText = "font-size:13px;color:var(--label-b);";
-  info.textContent = `已選取 ${objs.length} 個物件`;
+  info.style.cssText = "font-size:12px;color:var(--label-b);flex:0 0 auto;white-space:nowrap;";
+  info.textContent = `已選 ${objs.length} 個物件`;
   toolOptionsEl.appendChild(info);
-  const lockedCount = objs.filter((o) => o.locked).length;
-  if (lockedCount) {
-    const lockedHint = document.createElement("span");
-    lockedHint.style.cssText = "font-size:12px;color:var(--label-c);";
-    lockedHint.textContent = `其中 ${lockedCount} 個已鎖定，不會被移動／縮放／刪除`;
-    toolOptionsEl.appendChild(lockedHint);
+
+  const unlocked = objs.filter((o) => !o.locked);
+  if (unlocked.length >= 2) {
+    const alignWrap = document.createElement("div");
+    alignWrap.className = "btn-group";
+    const alignDefs = [
+      ["left", "⫤", "靠左對齊"],
+      ["centerX", "⫠", "水平置中"],
+      ["right", "⫣", "靠右對齊"],
+      ["top", "⫯", "靠上對齊"],
+      ["centerY", "⫟", "垂直置中"],
+      ["bottom", "⫰", "靠下對齊"],
+      ["sameW", "↔同寬", "與第一個物件同寬（照片等比例）"],
+      ["sameH", "↕同高", "與第一個物件同高（照片等比例）"],
+    ];
+    if (unlocked.length >= 3) {
+      alignDefs.push(["distH", "⋯水平等距", "水平等距分布"], ["distV", "⋮垂直等距", "垂直等距分布"]);
+    }
+    alignDefs.forEach(([mode, label, title]) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "mini";
+      b.textContent = label;
+      b.title = title;
+      b.addEventListener("click", () => alignSelectedObjects(entry, objs, mode));
+      alignWrap.appendChild(b);
+    });
+    const l = document.createElement("label");
+    l.textContent = "對齊";
+    l.appendChild(alignWrap);
+    toolOptionsEl.appendChild(l);
   }
-  const hint = document.createElement("span");
-  hint.style.cssText = "font-size:12px;color:var(--label-c);";
-  hint.textContent = "拖曳其中一個可整批移動；拖右下角把手可整批縮放（按住 Ctrl 鎖定原本的長寬比例）";
-  toolOptionsEl.appendChild(hint);
 
   const lockBtn = document.createElement("button");
-  lockBtn.textContent = "🔒 鎖定所選";
+  lockBtn.textContent = "🔒 鎖定";
   lockBtn.title = "鎖定後這些物件就不能被移動／縮放／刪除，避免編輯時不小心動到";
   lockBtn.addEventListener("click", () => {
     pushHistory(entry);
@@ -4127,7 +4761,7 @@ function buildMultiObjectPanel(objs, entry) {
   toolOptionsEl.appendChild(lockBtn);
 
   const unlockBtn = document.createElement("button");
-  unlockBtn.textContent = "🔓 解鎖所選";
+  unlockBtn.textContent = "🔓 解鎖";
   unlockBtn.addEventListener("click", () => {
     pushHistory(entry);
     objs.forEach((o) => (o.locked = false));
@@ -4138,14 +4772,11 @@ function buildMultiObjectPanel(objs, entry) {
 
   const imageObjs = objs.filter((o) => o.type === "image");
   if (imageObjs.length) {
-    const dateHint = document.createElement("span");
-    dateHint.style.cssText = "font-size:12px;color:var(--label-c);";
-    dateHint.textContent = `幫其中 ${imageObjs.length} 張照片加入相機日期章（左下角）`;
-    toolOptionsEl.appendChild(dateHint);
     let pickedDate = todayISO();
-    addDateInput(toolOptionsEl, "日期", pickedDate, (v) => (pickedDate = v));
+    addDateInput(toolOptionsEl, "日期章", pickedDate, (v) => (pickedDate = v));
     const applyDateBtn = document.createElement("button");
-    applyDateBtn.textContent = "📅 套用到所選照片";
+    applyDateBtn.textContent = `📅 套用(${imageObjs.length})`;
+    applyDateBtn.title = `幫其中 ${imageObjs.length} 張照片加入相機日期章（左下角）`;
     applyDateBtn.addEventListener("click", () => {
       pushHistory(entry);
       imageObjs.forEach((o) => (o.dateStamp = { enabled: true, date: pickedDate }));
@@ -4155,7 +4786,7 @@ function buildMultiObjectPanel(objs, entry) {
     });
     toolOptionsEl.appendChild(applyDateBtn);
     const clearDateBtn = document.createElement("button");
-    clearDateBtn.textContent = "移除日期章";
+    clearDateBtn.textContent = "移除日期";
     clearDateBtn.addEventListener("click", () => {
       pushHistory(entry);
       imageObjs.forEach((o) => { if (o.dateStamp) o.dateStamp.enabled = false; });
@@ -4185,25 +4816,27 @@ function renderToolOptions() {
 }
 
 function buildTextDefaultsPanel(d) {
-  addColorInput(toolOptionsEl, "顏色", d.color, (v) => (d.color = v));
-  addRangeInput(toolOptionsEl, "大小", d.fontSize, 8, 72, (v) => (d.fontSize = v));
+  addColorInput(toolOptionsEl, "顏色", d.color, (v) => { d.color = v; saveDefaults(); });
+  addRangeInput(toolOptionsEl, "大小", d.fontSize, 8, 72, (v) => { d.fontSize = v; saveDefaults(); }, "pt");
   addCheckbox(toolOptionsEl, "底色", d.bg.enabled, (v) => {
     d.bg.enabled = v;
+    saveDefaults();
     renderToolOptions();
   });
-  if (d.bg.enabled) addColorInput(toolOptionsEl, "底色顏色", d.bg.color, (v) => (d.bg.color = v));
+  if (d.bg.enabled) addColorInput(toolOptionsEl, "底色顏色", d.bg.color, (v) => { d.bg.color = v; saveDefaults(); });
   addCheckbox(toolOptionsEl, "外框", d.border.enabled, (v) => {
     d.border.enabled = v;
+    saveDefaults();
     renderToolOptions();
   });
   if (d.border.enabled) {
-    addColorInput(toolOptionsEl, "外框顏色", d.border.color, (v) => (d.border.color = v));
-    addRangeInput(toolOptionsEl, "外框粗細", d.border.width, 1, 10, (v) => (d.border.width = v));
+    addColorInput(toolOptionsEl, "外框顏色", d.border.color, (v) => { d.border.color = v; saveDefaults(); });
+    addRangeInput(toolOptionsEl, "外框粗細", d.border.width, 1, 10, (v) => { d.border.width = v; saveDefaults(); }, "px");
   }
 }
 function buildStrokeDefaultsPanel(d) {
-  addColorInput(toolOptionsEl, "顏色", d.color, (v) => (d.color = v));
-  addRangeInput(toolOptionsEl, "粗細", d.width, 1, 40, (v) => (d.width = v));
+  addColorInput(toolOptionsEl, "顏色", d.color, (v) => { d.color = v; saveDefaults(); });
+  addRangeInput(toolOptionsEl, "粗細", d.width, 1, 40, (v) => { d.width = v; saveDefaults(); }, "px");
 }
 function buildShapeDefaultsPanel(d) {
   addButtonGroup(
@@ -4217,6 +4850,7 @@ function buildShapeDefaultsPanel(d) {
     d.kind,
     (v) => {
       d.kind = v;
+      saveDefaults();
       renderToolOptions();
     }
   );
@@ -4224,18 +4858,19 @@ function buildShapeDefaultsPanel(d) {
     buildIndexMarkDefaultsPanel(state.defaults.indexmark);
     return;
   }
-  addColorInput(toolOptionsEl, "邊框顏色", d.stroke, (v) => (d.stroke = v));
-  addRangeInput(toolOptionsEl, "邊框粗細", d.strokeWidth, 0, 20, (v) => (d.strokeWidth = v));
+  addColorInput(toolOptionsEl, "邊框顏色", d.stroke, (v) => { d.stroke = v; saveDefaults(); });
+  addRangeInput(toolOptionsEl, "邊框粗細", d.strokeWidth, 0, 20, (v) => { d.strokeWidth = v; saveDefaults(); }, "px");
   addCheckbox(toolOptionsEl, "填色", d.fill.enabled, (v) => {
     d.fill.enabled = v;
+    saveDefaults();
     renderToolOptions();
   });
   if (d.fill.enabled) {
-    addColorInput(toolOptionsEl, "填色顏色", d.fill.color, (v) => (d.fill.color = v));
-    addRangeInput(toolOptionsEl, "填色透明度", Math.round((d.fill.opacity == null ? 1 : d.fill.opacity) * 100), 0, 100, (v) => (d.fill.opacity = v / 100));
+    addColorInput(toolOptionsEl, "填色顏色", d.fill.color, (v) => { d.fill.color = v; saveDefaults(); });
+    addRangeInput(toolOptionsEl, "透明度", Math.round((d.fill.opacity == null ? 1 : d.fill.opacity) * 100), 0, 100, (v) => { d.fill.opacity = v / 100; saveDefaults(); }, "%");
   }
-  addColorInput(toolOptionsEl, "文字顏色", d.textColor, (v) => (d.textColor = v));
-  addRangeInput(toolOptionsEl, "文字大小", d.fontSize, 8, 120, (v) => (d.fontSize = v));
+  addColorInput(toolOptionsEl, "文字顏色", d.textColor, (v) => { d.textColor = v; saveDefaults(); });
+  addRangeInput(toolOptionsEl, "文字大小", d.fontSize, 8, 120, (v) => { d.fontSize = v; saveDefaults(); }, "pt");
   const hint = document.createElement("span");
   hint.style.cssText = "font-size:12px;color:var(--label-c);";
   hint.textContent = "雙擊圖形可在中間打字";
@@ -4243,18 +4878,19 @@ function buildShapeDefaultsPanel(d) {
 }
 
 function buildIndexMarkDefaultsPanel(d) {
-  addColorInput(toolOptionsEl, "顏色", d.stroke, (v) => (d.stroke = v));
-  addRangeInput(toolOptionsEl, "線條粗細", d.strokeWidth, 1, 10, (v) => (d.strokeWidth = v));
+  addColorInput(toolOptionsEl, "顏色", d.stroke, (v) => { d.stroke = v; saveDefaults(); });
+  addRangeInput(toolOptionsEl, "線條粗細", d.strokeWidth, 1, 10, (v) => { d.strokeWidth = v; saveDefaults(); }, "px");
   addCheckbox(toolOptionsEl, "填色", d.fill.enabled, (v) => {
     d.fill.enabled = v;
+    saveDefaults();
     renderToolOptions();
   });
   if (d.fill.enabled) {
-    addColorInput(toolOptionsEl, "填色顏色", d.fill.color, (v) => (d.fill.color = v));
-    addRangeInput(toolOptionsEl, "填色透明度", Math.round((d.fill.opacity == null ? 1 : d.fill.opacity) * 100), 0, 100, (v) => (d.fill.opacity = v / 100));
+    addColorInput(toolOptionsEl, "填色顏色", d.fill.color, (v) => { d.fill.color = v; saveDefaults(); });
+    addRangeInput(toolOptionsEl, "透明度", Math.round((d.fill.opacity == null ? 1 : d.fill.opacity) * 100), 0, 100, (v) => { d.fill.opacity = v / 100; saveDefaults(); }, "%");
   }
-  addColorInput(toolOptionsEl, "文字顏色", d.textColor, (v) => (d.textColor = v));
-  addRangeInput(toolOptionsEl, "文字大小", d.fontSize, 8, 80, (v) => (d.fontSize = v));
+  addColorInput(toolOptionsEl, "文字顏色", d.textColor, (v) => { d.textColor = v; saveDefaults(); });
+  addRangeInput(toolOptionsEl, "文字大小", d.fontSize, 8, 80, (v) => { d.fontSize = v; saveDefaults(); }, "pt");
   const hint = document.createElement("span");
   hint.style.cssText = "font-size:12px;color:var(--label-c);";
   hint.textContent = "拖曳新增後雙擊可輸入文字；拖旋轉把手只會轉三角指標，文字不會跟著轉";
@@ -4274,22 +4910,21 @@ function buildStampDefaultsPanel(d) {
     preview.src = d.dataUrl;
     preview.style.cssText = "max-width:36px;max-height:36px;border:1px solid var(--chip-border);border-radius:4px;vertical-align:middle;";
     toolOptionsEl.appendChild(preview);
-    addRangeInput(toolOptionsEl, "印章大小", d.targetW, 20, 400, (v) => (d.targetW = v));
+    addRangeInput(toolOptionsEl, "印章大小", d.targetW, 20, 400, (v) => { d.targetW = v; saveDefaults(); }, "pt");
     const hint = document.createElement("span");
     hint.style.cssText = "font-size:12px;color:var(--label-c);";
     hint.textContent = "點頁面即可蓋章";
     toolOptionsEl.appendChild(hint);
   }
-  // 外框設定不限定要先選好印章圖片才能調：拖照片進頁面／貼上(Ctrl+V)照片時也是套用這裡的設定，
-  // 讓使用者只靠拖曳／貼上插入照片時，一樣有地方可以先設定好「新插入的照片要不要外框」。
   if (!d.border) d.border = { enabled: false, color: "#000000", width: 2 };
   addCheckbox(toolOptionsEl, "新插入照片加外框", d.border.enabled, (v) => {
     d.border.enabled = v;
+    saveDefaults();
     renderToolOptions();
   });
   if (d.border.enabled) {
-    addColorInput(toolOptionsEl, "外框顏色", d.border.color, (v) => (d.border.color = v));
-    addRangeInput(toolOptionsEl, "外框粗細", d.border.width, 1, 10, (v) => (d.border.width = v));
+    addColorInput(toolOptionsEl, "外框顏色", d.border.color, (v) => { d.border.color = v; saveDefaults(); });
+    addRangeInput(toolOptionsEl, "外框粗細", d.border.width, 1, 10, (v) => { d.border.width = v; saveDefaults(); }, "px");
   }
   const dropHint = document.createElement("span");
   dropHint.style.cssText = "font-size:12px;color:var(--label-c);";
@@ -4337,7 +4972,7 @@ function buildObjectPanel(obj, entry) {
   }
   if (obj.type === "text") {
     addColorInput(toolOptionsEl, "顏色", obj.color, (v) => withObjHistory(entry, () => (obj.color = v)));
-    addRangeInput(toolOptionsEl, "大小", Math.round(obj.fontSize), 8, 150, (v) => withObjHistory(entry, () => (obj.fontSize = v)));
+    addRangeInput(toolOptionsEl, "大小", Math.round(obj.fontSize), 8, 150, (v) => withObjHistory(entry, () => (obj.fontSize = v)), "pt");
     addCheckbox(toolOptionsEl, "底色", obj.bg.enabled, (v) => {
       withObjHistory(entry, () => (obj.bg.enabled = v));
       renderToolOptions();
@@ -4349,11 +4984,11 @@ function buildObjectPanel(obj, entry) {
     });
     if (obj.border.enabled) {
       addColorInput(toolOptionsEl, "外框顏色", obj.border.color, (v) => withObjHistory(entry, () => (obj.border.color = v)));
-      addRangeInput(toolOptionsEl, "外框粗細", obj.border.width, 1, 10, (v) => withObjHistory(entry, () => (obj.border.width = v)));
+      addRangeInput(toolOptionsEl, "外框粗細", obj.border.width, 1, 10, (v) => withObjHistory(entry, () => (obj.border.width = v)), "px");
     }
   } else if (obj.type === "highlight" || obj.type === "pen") {
     addColorInput(toolOptionsEl, "顏色", obj.color, (v) => withObjHistory(entry, () => (obj.color = v)));
-    addRangeInput(toolOptionsEl, "粗細", obj.width, 1, 40, (v) => withObjHistory(entry, () => (obj.width = v)));
+    addRangeInput(toolOptionsEl, "粗細", obj.width, 1, 40, (v) => withObjHistory(entry, () => (obj.width = v)), "px");
   } else if (obj.type === "image") {
     if (!obj.border) obj.border = { enabled: false, color: "#000000", width: 2 };
     const cropBtn = document.createElement("button");
@@ -4367,7 +5002,7 @@ function buildObjectPanel(obj, entry) {
     });
     if (obj.border.enabled) {
       addColorInput(toolOptionsEl, "外框顏色", obj.border.color, (v) => withObjHistory(entry, () => (obj.border.color = v)));
-      addRangeInput(toolOptionsEl, "外框粗細", obj.border.width, 1, 10, (v) => withObjHistory(entry, () => (obj.border.width = v)));
+      addRangeInput(toolOptionsEl, "外框粗細", obj.border.width, 1, 10, (v) => withObjHistory(entry, () => (obj.border.width = v)), "px");
     }
     if (!obj.dateStamp) obj.dateStamp = { enabled: false, date: todayISO() };
     addCheckbox(toolOptionsEl, "📅 相機日期章（左下角）", obj.dateStamp.enabled, (v) => {
@@ -4379,7 +5014,7 @@ function buildObjectPanel(obj, entry) {
     }
   } else if (obj.type === "rect" || obj.type === "ellipse" || obj.type === "cloud") {
     addColorInput(toolOptionsEl, "邊框顏色", obj.stroke, (v) => withObjHistory(entry, () => (obj.stroke = v)));
-    addRangeInput(toolOptionsEl, "邊框粗細", obj.strokeWidth, 0, 20, (v) => withObjHistory(entry, () => (obj.strokeWidth = v)));
+    addRangeInput(toolOptionsEl, "邊框粗細", obj.strokeWidth, 0, 20, (v) => withObjHistory(entry, () => (obj.strokeWidth = v)), "px");
     addCheckbox(toolOptionsEl, "填色", obj.fill.enabled, (v) => {
       withObjHistory(entry, () => (obj.fill.enabled = v));
       renderToolOptions();
@@ -4387,15 +5022,15 @@ function buildObjectPanel(obj, entry) {
     if (obj.fill.enabled) {
       addColorInput(toolOptionsEl, "填色顏色", obj.fill.color, (v) => withObjHistory(entry, () => (obj.fill.color = v)));
       addRangeInput(
-        toolOptionsEl, "填色透明度", Math.round((obj.fill.opacity == null ? 1 : obj.fill.opacity) * 100), 0, 100,
-        (v) => withObjHistory(entry, () => (obj.fill.opacity = v / 100))
+        toolOptionsEl, "透明度", Math.round((obj.fill.opacity == null ? 1 : obj.fill.opacity) * 100), 0, 100,
+        (v) => withObjHistory(entry, () => (obj.fill.opacity = v / 100)), "%"
       );
     }
     if (obj.text == null) obj.text = "";
     if (!obj.textColor) obj.textColor = "#000000";
     if (!obj.fontSize) obj.fontSize = 16;
     addColorInput(toolOptionsEl, "文字顏色", obj.textColor, (v) => withObjHistory(entry, () => (obj.textColor = v)));
-    addRangeInput(toolOptionsEl, "文字大小", obj.fontSize, 8, 120, (v) => withObjHistory(entry, () => (obj.fontSize = v)));
+    addRangeInput(toolOptionsEl, "文字大小", obj.fontSize, 8, 120, (v) => withObjHistory(entry, () => (obj.fontSize = v)), "pt");
     const editBtn = document.createElement("button");
     editBtn.textContent = obj.text ? "✏️ 編輯文字" : "➕ 輸入文字";
     editBtn.title = "在圖形中間輸入或修改文字（雙擊圖形也可以）";
@@ -4404,7 +5039,7 @@ function buildObjectPanel(obj, entry) {
   } else if (obj.type === "indexmark") {
     if (!obj.fill) obj.fill = { enabled: false, color: "#e21818", opacity: 1 };
     addColorInput(toolOptionsEl, "顏色", obj.stroke, (v) => withObjHistory(entry, () => (obj.stroke = v)));
-    addRangeInput(toolOptionsEl, "線條粗細", obj.strokeWidth, 1, 10, (v) => withObjHistory(entry, () => (obj.strokeWidth = v)));
+    addRangeInput(toolOptionsEl, "線條粗細", obj.strokeWidth, 1, 10, (v) => withObjHistory(entry, () => (obj.strokeWidth = v)), "px");
     addCheckbox(toolOptionsEl, "填色", obj.fill.enabled, (v) => {
       withObjHistory(entry, () => (obj.fill.enabled = v));
       renderToolOptions();
@@ -4412,12 +5047,12 @@ function buildObjectPanel(obj, entry) {
     if (obj.fill.enabled) {
       addColorInput(toolOptionsEl, "填色顏色", obj.fill.color, (v) => withObjHistory(entry, () => (obj.fill.color = v)));
       addRangeInput(
-        toolOptionsEl, "填色透明度", Math.round((obj.fill.opacity == null ? 1 : obj.fill.opacity) * 100), 0, 100,
-        (v) => withObjHistory(entry, () => (obj.fill.opacity = v / 100))
+        toolOptionsEl, "透明度", Math.round((obj.fill.opacity == null ? 1 : obj.fill.opacity) * 100), 0, 100,
+        (v) => withObjHistory(entry, () => (obj.fill.opacity = v / 100)), "%"
       );
     }
     addColorInput(toolOptionsEl, "文字顏色", obj.textColor, (v) => withObjHistory(entry, () => (obj.textColor = v)));
-    addRangeInput(toolOptionsEl, "文字大小", obj.fontSize, 8, 80, (v) => withObjHistory(entry, () => (obj.fontSize = v)));
+    addRangeInput(toolOptionsEl, "文字大小", obj.fontSize, 8, 80, (v) => withObjHistory(entry, () => (obj.fontSize = v)), "pt");
     const editBtn = document.createElement("button");
     editBtn.textContent = obj.text ? "✏️ 編輯文字" : "➕ 輸入文字";
     editBtn.title = "輸入編號文字（雙擊符號也可以）";
@@ -4428,9 +5063,36 @@ function buildObjectPanel(obj, entry) {
   addDeleteButton(toolOptionsEl);
 }
 
-/* ---------------- 匯出 ---------------- */
+/* ---------------- 匯出（含檔名／畫質／可編輯備份選項彈窗） ---------------- */
 
-$("#btnDownload").addEventListener("click", () => exportPages(state.pages, suggestFileName()));
+let pendingExportPages = null;
+function openExportModal(pageEntries, defaultName) {
+  if (!pageEntries || !pageEntries.length) return;
+  pendingExportPages = pageEntries;
+  const input = $("#expFileName");
+  input.value = defaultName || suggestFileName();
+  $("#exportModal").hidden = false;
+  setTimeout(() => {
+    input.focus();
+    const dot = input.value.toLowerCase().lastIndexOf(".pdf");
+    input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
+  }, 0);
+}
+$("#btnDownload").addEventListener("click", () => openExportModal(state.pages, suggestFileName()));
+$("#expCancel").addEventListener("click", () => ($("#exportModal").hidden = true));
+$("#expApply").addEventListener("click", async () => {
+  const entries = pendingExportPages;
+  if (!entries || !entries.length) return;
+  let name = ($("#expFileName").value || "").trim() || suggestFileName();
+  if (!/\.pdf$/i.test(name)) name += ".pdf";
+  const scale = Number($("#expQuality").value) || EXPORT_SCALE;
+  const includeBackup = $("#expIncludeBackup").checked;
+  $("#exportModal").hidden = true;
+  await exportPages(entries, name, { scale, includeBackup });
+});
+$("#expFileName").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("#expApply").click();
+});
 
 function suggestFileName() {
   const first = state.sources[0];
@@ -4451,7 +5113,7 @@ async function getLibDoc(sourceIndex) {
   return src.libDoc;
 }
 
-const EXPORT_SCALE = 3; // 匯出時每個 point 用幾個像素繪製，與畫面縮放無關，確保品質穩定
+const EXPORT_SCALE = 3; // 預設匯出倍數（可於匯出視窗切換為 2x 標準或 3x 高畫質）
 
 function ensureImagesLoaded(entry) {
   const imgs = entry.objects.filter((o) => o.type === "image");
@@ -4475,7 +5137,9 @@ function ensureImagesLoaded(entry) {
   );
 }
 
-async function exportPages(pageEntries, fileName) {
+async function exportPages(pageEntries, fileName, opts) {
+  const expScale = (opts && opts.scale) || EXPORT_SCALE;
+  const includeBackup = opts && opts.includeBackup != null ? opts.includeBackup : true;
   showLoading("匯出 PDF 中…");
   try {
     const outDoc = await PDFDocument.create();
@@ -4483,15 +5147,12 @@ async function exportPages(pageEntries, fileName) {
       const totalRotation = (((entry.baseRotation + entry.userDelta) % 360) + 360) % 360;
 
       if (isCropped(entry)) {
-        // 頁面裁切／延伸過：無法只覆蓋一張標註用的透明 PNG 了事（原始內容的座標系沒有跟著變），
-        // 改成把原始頁面內容＋我們自己的標註一起畫成一張完整的圖片，當作整個新頁面的內容。
-        // 這樣裁切後的頁面就不再保留可選取／搜尋的文字層了，是裁切／延伸頁面必要的取捨。
         await ensureImagesLoaded(entry);
         const cw = entry.cropW, ch = entry.cropH;
-        const scale = EXPORT_SCALE * CSS_SCALE;
+        const scale = expScale * CSS_SCALE;
         const c = document.createElement("canvas");
-        c.width = Math.max(1, Math.round(cw * EXPORT_SCALE));
-        c.height = Math.max(1, Math.round(ch * EXPORT_SCALE));
+        c.width = Math.max(1, Math.round(cw * expScale));
+        c.height = Math.max(1, Math.round(ch * expScale));
         const ctx = c.getContext("2d");
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(0, 0, c.width, c.height);
@@ -4501,7 +5162,7 @@ async function exportPages(pageEntries, fileName) {
           offsetY: -entry.cropY * scale,
         });
         await entry.pdfjsPage.render({ canvasContext: ctx, viewport }).promise;
-        renderPageObjects(entry, ctx, EXPORT_SCALE, { withHandles: false, noClear: true });
+        renderPageObjects(entry, ctx, expScale, { withHandles: false, noClear: true });
         const dataUrl = c.toDataURL("image/png");
         const bytes = await dataUrlToBytes(dataUrl);
         const png = await outDoc.embedPng(bytes);
@@ -4520,28 +5181,29 @@ async function exportPages(pageEntries, fileName) {
         await ensureImagesLoaded(entry);
         const w = copied.getWidth(), h = copied.getHeight();
         const c = document.createElement("canvas");
-        c.width = Math.max(1, Math.round(w * EXPORT_SCALE));
-        c.height = Math.max(1, Math.round(h * EXPORT_SCALE));
-        renderPageObjects(entry, c.getContext("2d"), EXPORT_SCALE, { withHandles: false });
+        c.width = Math.max(1, Math.round(w * expScale));
+        c.height = Math.max(1, Math.round(h * expScale));
+        renderPageObjects(entry, c.getContext("2d"), expScale, { withHandles: false });
         const dataUrl = c.toDataURL("image/png");
         const bytes = await dataUrlToBytes(dataUrl);
         const png = await outDoc.embedPng(bytes);
         copied.drawImage(png, { x: 0, y: 0, width: w, height: h });
       }
     }
-    try {
-      const backup = await buildEditableBackup(pageEntries);
-      await outDoc.attach(new TextEncoder().encode(JSON.stringify(backup.manifest)), EDITABLE_DATA_NAME, {
-        mimeType: "application/json",
-        description: "43PDF 編輯器內部資料，用這個編輯器重新開啟時會用來還原成可編輯的物件；其他 PDF 軟體可以忽略，不影響正常開啟與列印。",
-      });
-      await outDoc.attach(backup.srcBytes, EDITABLE_SRC_NAME, {
-        mimeType: "application/pdf",
-        description: "43PDF 編輯器內部資料：未加註的原始頁面內容。",
-      });
-    } catch (err) {
-      // 附加失敗不影響檔案本身能不能正常開啟，只是下次用這個編輯器重開時物件不能再編輯而已
-      console.warn("附加可編輯備份資料失敗", err);
+    if (includeBackup) {
+      try {
+        const backup = await buildEditableBackup(pageEntries, expScale);
+        await outDoc.attach(new TextEncoder().encode(JSON.stringify(backup.manifest)), EDITABLE_DATA_NAME, {
+          mimeType: "application/json",
+          description: "43PDF 編輯器內部資料，用這個編輯器重新開啟時會用來還原成可編輯的物件；其他 PDF 軟體可以忽略，不影響正常開啟與列印。",
+        });
+        await outDoc.attach(backup.srcBytes, EDITABLE_SRC_NAME, {
+          mimeType: "application/pdf",
+          description: "43PDF 編輯器內部資料：未加註的原始頁面內容。",
+        });
+      } catch (err) {
+        console.warn("附加可編輯備份資料失敗", err);
+      }
     }
 
     const bytes = await outDoc.save();
@@ -4563,7 +5225,8 @@ async function exportPages(pageEntries, fileName) {
 const EDITABLE_DATA_NAME = "43pdf-editor-data.json";
 const EDITABLE_SRC_NAME = "43pdf-editor-original.pdf";
 
-async function buildEditableBackup(pageEntries) {
+async function buildEditableBackup(pageEntries, expScale) {
+  const backupScale = expScale || EXPORT_SCALE;
   const srcDoc = await PDFDocument.create();
   const pages = [];
   for (const entry of pageEntries) {
@@ -4572,10 +5235,10 @@ async function buildEditableBackup(pageEntries) {
       // 的乾淨版本當作這一頁的原始內容（跟匯出主流程的做法一樣，只是不疊 renderPageObjects）。
       const totalRotation = (((entry.baseRotation + entry.userDelta) % 360) + 360) % 360;
       const cw = entry.cropW, ch = entry.cropH;
-      const scale = EXPORT_SCALE * CSS_SCALE;
+      const scale = backupScale * CSS_SCALE;
       const c = document.createElement("canvas");
-      c.width = Math.max(1, Math.round(cw * EXPORT_SCALE));
-      c.height = Math.max(1, Math.round(ch * EXPORT_SCALE));
+      c.width = Math.max(1, Math.round(cw * backupScale));
+      c.height = Math.max(1, Math.round(ch * backupScale));
       const ctx = c.getContext("2d");
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, c.width, c.height);
@@ -4826,15 +5489,48 @@ function getTheme() {
 function applyTheme(theme) {
   if (theme === "light") document.documentElement.setAttribute("data-theme", "light");
   else document.documentElement.removeAttribute("data-theme");
+  const label = theme === "light" ? "🌙 暗黑模式" : "☀️ 一般模式";
   const btn = $("#btnThemeToggle");
-  if (btn) btn.textContent = theme === "light" ? "🌙 暗黑模式" : "☀️ 一般模式";
+  if (btn) btn.textContent = label;
+  const btnM = $("#btnThemeToggleMobile");
+  if (btnM) btnM.textContent = label;
 }
 applyTheme(getTheme());
-$("#btnThemeToggle").addEventListener("click", () => {
+function toggleTheme() {
   const next = getTheme() === "light" ? "dark" : "light";
   try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
   applyTheme(next);
+}
+$("#btnThemeToggle").addEventListener("click", () => {
+  toggleTheme();
+  if ($("#settingsPopover")) $("#settingsPopover").hidden = true;
 });
+
+/* ====== 桌面版 ⚙️ 設定下拉選單與快捷鍵說明彈窗 ====== */
+const btnSettingsMenu = $("#btnSettingsMenu");
+const settingsPopover = $("#settingsPopover");
+if (btnSettingsMenu && settingsPopover) {
+  btnSettingsMenu.addEventListener("click", (e) => {
+    e.stopPropagation();
+    settingsPopover.hidden = !settingsPopover.hidden;
+  });
+  document.addEventListener("click", (e) => {
+    if (!settingsPopover.hidden && !settingsPopover.contains(e.target) && e.target !== btnSettingsMenu) {
+      settingsPopover.hidden = true;
+    }
+  });
+}
+function openShortcutsModal() {
+  if (settingsPopover) settingsPopover.hidden = true;
+  $("#shortcutsModal").hidden = false;
+}
+if ($("#btnShortcuts")) $("#btnShortcuts").addEventListener("click", openShortcutsModal);
+if ($("#scClose")) $("#scClose").addEventListener("click", () => { $("#shortcutsModal").hidden = true; });
+if ($("#shortcutsModal")) {
+  $("#shortcutsModal").addEventListener("click", (e) => {
+    if (e.target === $("#shortcutsModal")) $("#shortcutsModal").hidden = true;
+  });
+}
 
 /* ====== 強制重新整理（清除快取）======
    畫面更新完看起來還是舊的、或是已安裝的 PWA 視窗卡在舊版 Service Worker 快取時用：
@@ -5024,11 +5720,12 @@ function setMoreMenuOpen(open) {
 $("#btnMoreMenu").addEventListener("click", () => setMoreMenuOpen(true));
 $("#btnCloseMoreMenu").addEventListener("click", () => setMoreMenuOpen(false));
 $("#moreMenuBackdrop").addEventListener("click", () => setMoreMenuOpen(false));
-// 這幾個是一次性動作（開啟彈窗或立刻切換），點了之後就把面板收起來，不用使用者自己關；
-// 檢視模式／翻頁按鈕刻意不收起來，不然連續翻頁還要一直重新打開面板
-["#btnAppend", "#btnBlankPage", "#btnToolLibrary", "#btnThemeToggle", "#btnHardRefresh"].forEach((sel) => {
-  $(sel).addEventListener("click", () => setMoreMenuOpen(false));
-});
+if ($("#btnAppendMobile")) $("#btnAppendMobile").addEventListener("click", () => { setMoreMenuOpen(false); $("#fileInputAppend").click(); });
+if ($("#btnBlankPageMobile")) $("#btnBlankPageMobile").addEventListener("click", () => { setMoreMenuOpen(false); openBlankPageModal(); });
+if ($("#btnToolLibraryMobile")) $("#btnToolLibraryMobile").addEventListener("click", () => { setMoreMenuOpen(false); renderToolLibraryList(); $("#toolLibraryModal").hidden = false; });
+if ($("#btnThemeToggleMobile")) $("#btnThemeToggleMobile").addEventListener("click", () => { setMoreMenuOpen(false); toggleTheme(); });
+if ($("#btnShortcutsMobile")) $("#btnShortcutsMobile").addEventListener("click", () => { setMoreMenuOpen(false); openShortcutsModal(); });
+if ($("#btnHardRefreshMobile")) $("#btnHardRefreshMobile").addEventListener("click", () => { setMoreMenuOpen(false); forceHardRefresh(); });
 
 /* ====== 工具庫：把用不到的工具從工具列隱藏起來 ====== */
 // 「瀏覽」工具不列在這裡——它是基本的瀏覽／選取操作，藏起來會讓人卡住沒辦法選物件，
@@ -5082,6 +5779,7 @@ function renderToolLibraryList() {
 
 applyToolVisibility();
 $("#btnToolLibrary").addEventListener("click", () => {
+  if (settingsPopover) settingsPopover.hidden = true;
   renderToolLibraryList();
   $("#toolLibraryModal").hidden = false;
 });

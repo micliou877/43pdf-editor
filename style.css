@@ -7,6 +7,7 @@
   --bg: #14161b;
   --text: #c9cdd6;
   --toolbar-bg: #1a1d24;
+  --toolbar-border: #262a33;
   --toolbar-text: #e3e6ea;
   --toolbar-shadow: rgba(0,0,0,.4);
   --tool-group-bg: #20242c;
@@ -64,12 +65,18 @@
   --loading-bg: rgba(10,12,16,.75);
   --loading-text: #c9cdd6;
   --spinner-border: #2e323c;
+  --scrollbar-track: #161920;
+  --scrollbar-thumb: #353b48;
+  --scrollbar-thumb-hover: #4b5466;
+  --kbd-bg: #252a34;
+  --kbd-border: #3a404e;
 }
 
 :root[data-theme="light"] {
   --bg: #e9edf1;
   --text: #1b1f24;
   --toolbar-bg: #1f2630;
+  --toolbar-border: #2f3846;
   --toolbar-text: #fff;
   --toolbar-shadow: rgba(0,0,0,.2);
   --tool-group-bg: #2a333f;
@@ -95,7 +102,7 @@
   --thumb-shadow: rgba(0,0,0,.3);
   --thumb-num-text: #666;
   --context-bg: #fff;
-  --context-border: transparent;
+  --context-border: #d7dde3;
   --context-text: #222;
   --context-hover-bg: #eef2f7;
   --context-shadow: rgba(0,0,0,.25);
@@ -127,7 +134,25 @@
   --loading-bg: rgba(255,255,255,.75);
   --loading-text: #1b1f24;
   --spinner-border: #cbd5e1;
+  --scrollbar-track: #edf1f5;
+  --scrollbar-thumb: #c1cad4;
+  --scrollbar-thumb-hover: #9aa6b5;
+  --kbd-bg: #f1f4f8;
+  --kbd-border: #cdd5df;
 }
+
+/* 自訂細緻捲動條（隨暗黑／一般模式切換，取代 Windows 刺眼白條） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb); border-radius: 4px; border: 2px solid var(--scrollbar-track);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+::-webkit-scrollbar-corner { background: var(--scrollbar-track); }
 
 html, body {
   margin: 0; padding: 0; height: 100%;
@@ -136,25 +161,44 @@ html, body {
 }
 body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
+/* ====== 雙層精簡頂部工具列 ====== */
 .toolbar {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 8px 12px; background: var(--toolbar-bg); color: var(--toolbar-text);
+  display: flex; flex-direction: column;
+  background: var(--toolbar-bg); color: var(--toolbar-text);
   position: relative; z-index: 30;
   box-shadow: 0 2px 8px var(--toolbar-shadow);
 }
-.brand { font-weight: 700; margin-right: 8px; white-space: nowrap; }
-.group { display: flex; align-items: center; gap: 6px; }
+.toolbar-row {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 5px 10px;
+}
+.toolbar-top {
+  border-bottom: 1px solid var(--toolbar-border);
+  justify-content: space-between;
+}
+.toolbar-tools {
+  padding: 4px 10px;
+}
+.brand-wrap {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+}
+.brand { font-weight: 700; font-size: 14px; white-space: nowrap; }
+.doc-name {
+  font-size: 12px; color: var(--label-a); max-width: 130px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.doc-name:empty { display: none; }
+.toolbar-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.tb-sep { width: 1px; height: 20px; background: var(--toolbar-border); flex-shrink: 0; }
+.group { display: flex; align-items: center; gap: 5px; }
 .group[hidden] { display: none; }
-.tool-group { background: var(--tool-group-bg); padding: 3px; border-radius: 8px; }
+.tool-group { background: var(--tool-group-bg); padding: 2px; border-radius: 8px; }
 .mobile-only { display: none; }
-/* 桌面版：#moreMenuPanel 只是個邏輯分組，display:contents 讓它在版面上「隱形」，
-   裡面的 .group 直接變成 .toolbar 的子項，跟以前完全沒有這層包裝時看起來一樣；
-   手機版才會在 media query 裡把它實體化成側邊抽屜（見下方） */
-#moreMenuPanel { display: contents; }
+.mobile-only-panel { display: none; }
 .more-menu-head { display: none; }
 
 button {
-  font-family: inherit; font-size: 14px; padding: 6px 10px; border-radius: 8px;
+  font-family: inherit; font-size: 13px; padding: 4px 8px; border-radius: 7px;
   border: 1px solid var(--btn-border); background: var(--btn-bg); color: var(--btn-text); cursor: pointer;
   transition: background .15s, border-color .15s;
 }
@@ -164,48 +208,83 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.primary:hover:not(:disabled) { background: var(--accent-hover); }
 button.tool-btn.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 button.tool-btn[hidden] { display: none; }
+button.mini-tb { font-size: 12px; padding: 4px 7px; }
 
-#zoomLabel { width: 46px; text-align: center; font-size: 13px; }
+.zoom-group { display: flex; align-items: center; gap: 4px; }
+.zoom-pill {
+  min-width: 50px; text-align: center; font-size: 12px; padding: 4px 6px;
+  font-variant-numeric: tabular-nums;
+}
 
-/* 項目一多，每個「標籤＋控制項」要整組一起換到下一行，不能讓文字自己斷行變成
-   「邊框／粗細」這種兩截的怪樣子，所以每個子項都設 flex:0 0 auto（不被壓縮）、
-   文字 white-space:nowrap；只有純文字提示（没包在 label/button 裡的 span）例外，
-   讓它自己獨佔一整行、可以正常換行（見下面 #toolOptions > span）。 */
-#toolOptions { gap: 10px; row-gap: 8px; flex-wrap: wrap; align-items: center; }
+.page-jump-group { gap: 4px; }
+.page-jump-group button { padding: 4px 7px; font-size: 12px; }
+#pageJumpInput {
+  width: 44px; padding: 3px 4px; text-align: center; font-size: 12px; border-radius: 6px;
+  border: 1px solid var(--btn-border); background: var(--modal-input-bg); color: var(--toolbar-text);
+  font-variant-numeric: tabular-nums; -moz-appearance: textfield;
+}
+#pageJumpInput::-webkit-outer-spin-button,
+#pageJumpInput::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.page-slash, #pageIndicator { font-size: 12px; color: var(--label-a); font-variant-numeric: tabular-nums; }
+
+/* ⚙️ 設定下拉選單 */
+.settings-wrap { position: relative; }
+.settings-popover {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 60;
+  background: var(--context-bg); border: 1px solid var(--context-border); border-radius: 9px;
+  padding: 5px; box-shadow: 0 8px 24px var(--context-shadow);
+  display: flex; flex-direction: column; gap: 2px; min-width: 215px;
+}
+.settings-popover[hidden] { display: none; }
+.settings-popover button {
+  background: none; border: none; color: var(--context-text); text-align: left;
+  padding: 8px 10px; font-size: 13px; border-radius: 6px; white-space: nowrap;
+}
+.settings-popover button:hover { background: var(--context-hover-bg); }
+.settings-popover hr { border: none; border-top: 1px solid var(--context-border); margin: 4px 0; }
+
+/* ====== 工具／物件屬性選項列：只浮在右側編輯區頂部，絕不遮擋左側縮圖區 ====== */
+#toolOptions { gap: 10px; row-gap: 7px; flex-wrap: wrap; align-items: center; }
+#toolOptions:empty { display: none; }
 #toolOptions label {
-  display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--label-a);
+  display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--label-a);
   white-space: nowrap; flex: 0 0 auto;
 }
-#toolOptions button { flex: 0 0 auto; white-space: nowrap; }
+#toolOptions button { flex: 0 0 auto; white-space: nowrap; font-size: 12px; padding: 4px 8px; }
 #toolOptions > span { flex: 1 1 100%; white-space: normal; }
-#toolOptions input[type=color] { width: 28px; height: 28px; padding: 0; border: none; background: none; }
+#toolOptions input[type=color] { width: 26px; height: 26px; padding: 0; border: none; background: none; cursor: pointer; }
 #toolOptions .color-swatches { display: flex; gap: 3px; flex: 0 0 auto; }
-#toolOptions .color-swatch { width: 18px; height: 18px; padding: 0; border: 1px solid var(--swatch-border); border-radius: 3px; cursor: pointer; }
+#toolOptions .color-swatch { width: 17px; height: 17px; padding: 0; border: 1px solid var(--swatch-border); border-radius: 3px; cursor: pointer; }
 #toolOptions .color-swatch:hover { border-color: #fff; }
-#toolOptions input[type=range] { width: 90px; }
+#toolOptions input[type=range] { width: 88px; accent-color: var(--accent-soft); cursor: pointer; }
 #toolOptions input[type=date] {
-  padding: 4px 6px; border: 1px solid var(--modal-input-border); border-radius: 6px;
-  background: var(--modal-input-bg); color: var(--modal-input-text);
+  padding: 3px 6px; border: 1px solid var(--modal-input-border); border-radius: 6px;
+  background: var(--modal-input-bg); color: var(--modal-input-text); font-size: 12px;
 }
-#toolOptions .btn-group { display: flex; gap: 4px; flex: 0 0 auto; }
-#toolOptions .btn-group button.mini { padding: 3px 8px; font-size: 12px; }
-#toolOptions .btn-group button.mini.active { background: var(--accent); border-color: var(--accent); }
+#toolOptions .btn-group { display: flex; gap: 3px; flex: 0 0 auto; }
+#toolOptions .btn-group button.mini { padding: 3px 7px; font-size: 12px; }
+#toolOptions .btn-group button.mini.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 
-/* 桌面版：物件／工具的選項列浮在主工具列正下方，不佔版面高度，不管裡面的項目
-   多寡、要換幾行，底下的頁面位置都不會跟著往下移（跟手機版「浮在工具列上方」
-   是同一個精神，只是桌面版主工具列在上面，所以改成浮在它下面）。 */
+.range-val {
+  font-size: 11px; color: var(--label-b); min-width: 34px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.label-head { display: flex; justify-content: space-between; align-items: center; width: 100%; }
+
 @media (min-width: 761px) {
-  #toolOptions:not(:empty) {
-    position: absolute; left: 0; right: 0; top: 100%;
-    margin: 0; padding: 8px 12px;
+  .viewer #toolOptions:not(:empty) {
+    position: absolute; left: 0; right: 0; top: 0; z-index: 25;
+    margin: 0; padding: 7px 12px;
     background: var(--toolbar-bg);
-    box-shadow: 0 4px 10px var(--toolbar-shadow);
-    max-height: 50vh; overflow-y: auto;
+    border-bottom: 1px solid var(--toolbar-border);
+    box-shadow: 0 4px 12px var(--toolbar-shadow);
+    max-height: 45vh; overflow-y: auto;
   }
 }
 
 .main { flex: 1; display: flex; min-height: 0; }
 
+/* ====== 左側頁面縮圖側邊欄（可拖曳調寬＋自動多欄） ====== */
 .sidebar {
   width: var(--sidebar-width, 190px); flex-shrink: 0; background: var(--sidebar-bg); border-right: 1px solid var(--sidebar-border);
   display: flex; flex-direction: column; min-height: 0;
@@ -235,8 +314,22 @@ body.resizing-sidebar * { cursor: col-resize !important; }
   padding: 1px 6px; font-size: 12px; line-height: 1.3; min-height: auto; flex-shrink: 0; border-radius: 6px;
 }
 .sidebar-zoom input[type=range] { flex: 1; min-width: 0; margin: 0; accent-color: var(--accent-soft); cursor: pointer; }
-.sidebar-actions { display: flex; gap: 6px; }
-.sidebar-actions button { flex: 1; min-width: 0; font-size: 12px; padding: 4px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-select-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  font-size: 12px; font-weight: 400;
+}
+.sidebar-select-all {
+  display: inline-flex; align-items: center; gap: 5px; cursor: pointer; color: var(--sidebar-head-text);
+  user-select: none;
+}
+.sidebar-sel-count { font-size: 11px; color: var(--accent-soft); font-variant-numeric: tabular-nums; }
+.sidebar-actions { display: flex; gap: 4px; }
+.sidebar-actions button {
+  flex: 1; min-width: 0; font-size: 12px; padding: 4px 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sidebar-actions button.batch-rot-btn { flex: 0 0 auto; padding: 4px 7px; }
+
 .thumb-list {
   flex: 1; overflow-y: auto; padding: 10px;
   display: grid;
@@ -247,6 +340,7 @@ body.resizing-sidebar * { cursor: col-resize !important; }
 .thumb-item {
   border: 2px solid transparent; border-radius: 6px; padding: 4px; background: var(--thumb-bg);
   cursor: grab; position: relative; text-align: center; user-select: none; min-width: 0;
+  transition: border-color .12s;
 }
 .thumb-item:active { cursor: grabbing; }
 .thumb-item.current { border-color: var(--accent-soft); }
@@ -266,7 +360,7 @@ body.resizing-sidebar * { cursor: col-resize !important; }
 .thumb-item img, .thumb-item canvas { width: 100%; display: block; box-shadow: 0 1px 4px var(--thumb-shadow); background: #fff; }
 .thumb-item .thumb-num { font-size: 11px; color: var(--thumb-num-text); margin-top: 4px; }
 .thumb-item .thumb-check {
-  position: absolute; top: 4px; left: 4px; width: 16px; height: 16px; z-index: 2;
+  position: absolute; top: 4px; left: 4px; width: 16px; height: 16px; z-index: 2; cursor: pointer;
 }
 .thumb-item .thumb-rot {
   position: absolute; top: 2px; right: 2px; display: flex; gap: 2px; opacity: 0; transition: opacity .15s;
@@ -290,17 +384,14 @@ body.resizing-sidebar * { cursor: col-resize !important; }
 }
 .thumb-context-menu button:hover { background: var(--context-hover-bg); }
 
-.viewer { flex: 1; position: relative; overflow: hidden; background: var(--bg); }
+/* ====== 主編輯畫布 ====== */
+.viewer { flex: 1; position: relative; overflow: hidden; background: var(--bg); min-width: 0; }
+.viewer.space-panning, .viewer.space-panning * { cursor: grab !important; }
+.viewer.canvas-panning, .viewer.canvas-panning * { cursor: grabbing !important; user-select: none; }
 .viewer-scroll {
   position: absolute; inset: 0; overflow: auto; padding: 24px; display: flex; flex-direction: column;
   align-items: safe center; gap: 20px; touch-action: none;
 }
-/* touch-action:none 讓手機上的捲動／縮放固定交給 app.js 的兩指手勢處理（單指保留給畫筆／
-   選取移動物件等編輯操作），連空白的留白區域（不是頁面本身）也不例外，體驗才會一致。 */
-/* page-row 是頁面外層再包一層的置中容器，寬高都包含上下左右的暫放區（見 app.js 的
-   PASTEBOARD_MARGIN／layoutPage()），這樣瀏覽器才會把暫放區算進可捲動範圍——否則「往左／
-   往上」超出視窗的暫放區，瀏覽器天生無法捲過去看。align-items 要搭配 safe 關鍵字，不然這個
-   容器本身太寬時一樣會卡到瀏覽器「置中時左側/上側溢出捲不到」的限制。 */
 .page-row { display: flex; justify-content: center; align-items: safe center; flex-shrink: 0; }
 
 #emptyState {
@@ -337,7 +428,7 @@ body.resizing-sidebar * { cursor: col-resize !important; }
 }
 .page-size-tip[hidden] { display: none; }
 
-/* 裁切框／縮放把手是疊加在白色 PDF 頁面上的操作提示，跟整體介面色調無關，兩種模式都維持原本辨識度高的顏色 */
+/* 裁切框／縮放把手 */
 .crop-preview-box {
   position: absolute; z-index: 20; pointer-events: none;
   border: 2px dashed #16a34a; background: rgba(22,163,74,.1);
@@ -352,7 +443,7 @@ body.resizing-sidebar * { cursor: col-resize !important; }
 .crop-handle-n, .crop-handle-s { cursor: ns-resize; }
 .crop-handle-e, .crop-handle-w { cursor: ew-resize; }
 
-/* 圖片物件裁切彈窗：跟上面頁面裁切框是同一種概念，但畫在彈窗裡的 <img> 上，所以另外取一組 class 名稱，避免互相影響 */
+/* 圖片物件裁切彈窗 */
 #imageCropModal .modal { width: min(640px, 94vw); }
 .img-crop-stage {
   position: relative; width: fit-content; max-width: 100%; align-self: center; overflow: hidden;
@@ -379,16 +470,20 @@ body.resizing-sidebar * { cursor: col-resize !important; }
   font-family: "Microsoft JhengHei","Noto Sans TC",sans-serif; padding: 2px; overflow: auto;
 }
 
+/* ====== 彈窗與快捷鍵視窗 ====== */
 .modal-backdrop {
   position: fixed; inset: 0; background: var(--modal-backdrop); display: flex;
   align-items: center; justify-content: center; z-index: 100;
 }
 .modal-backdrop[hidden] { display: none; }
 .modal {
-  background: var(--modal-bg); border: 1px solid var(--modal-border); padding: 20px 24px; border-radius: 12px; width: 320px;
+  background: var(--modal-bg); border: 1px solid var(--modal-border); padding: 20px 24px; border-radius: 12px; width: 340px;
+  max-height: 88vh; overflow-y: auto;
   display: flex; flex-direction: column; gap: 12px; box-shadow: 0 8px 36px var(--modal-shadow);
 }
+.modal.modal-wide { width: min(640px, 94vw); }
 .modal h3 { margin: 0 0 4px; color: var(--modal-title-text); }
+.modal h4 { margin: 0 0 8px; font-size: 13px; color: var(--accent-soft); }
 .modal label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--label-e); }
 .modal label.checkbox { flex-direction: row; align-items: center; gap: 8px; }
 .modal label[hidden] { display: none; }
@@ -400,7 +495,19 @@ body.resizing-sidebar * { cursor: col-resize !important; }
 .wm-image-preview img { max-width: 48px; max-height: 48px; border: 1px solid var(--chip-border); border-radius: 4px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .modal-actions button, .modal button { color: var(--modal-btn-text); }
-.modal input[type=text], .modal input[type=number], .modal select { padding: 6px; border: 1px solid var(--modal-input-border); border-radius: 6px; background: var(--modal-input-bg); color: var(--modal-input-text); }
+.modal button.primary { color: var(--accent-text); }
+.modal input[type=text], .modal input[type=number], .modal select { padding: 6px 8px; border: 1px solid var(--modal-input-border); border-radius: 6px; background: var(--modal-input-bg); color: var(--modal-input-text); }
+.modal input[type=range] { accent-color: var(--accent-soft); }
+
+.shortcuts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; }
+.sc-sec { display: flex; flex-direction: column; gap: 7px; font-size: 12.5px; color: var(--label-d); }
+.sc-sec > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.sc-sec span { color: var(--label-e); }
+kbd {
+  display: inline-block; padding: 1px 5px; font-size: 11px; font-family: inherit;
+  border-radius: 4px; background: var(--kbd-bg); border: 1px solid var(--kbd-border);
+  color: var(--modal-title-text);
+}
 
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
@@ -423,24 +530,22 @@ body.resizing-sidebar * { cursor: col-resize !important; }
 
 @media (max-width: 760px) {
   .mobile-only { display: inline-flex; }
-  .desktop-only, .sidebar-resizer { display: none; }
+  .desktop-only, .sidebar-resizer { display: none !important; }
   .more-menu-head { display: flex; align-items: center; justify-content: space-between; font-weight: 700; }
 
-  /* 頂端只留最常用的幾個按鈕（開檔／下載／復原／縮放／頁面／更多），
-     其餘的交給下面的「更多功能」抽屜跟底部工具列，寬度不夠就換行，
-     不會像以前那樣整排擠成兩行字或被切到畫面外點不到 */
-  .toolbar { align-items: flex-start; padding-bottom: 6px; }
+  .toolbar-top { padding: 6px 8px; border-bottom: none; }
+  .toolbar-tools { padding: 0; }
+  .brand-wrap { width: 100%; justify-content: space-between; }
+  .doc-name { max-width: 55vw; }
   .group { flex-wrap: wrap; row-gap: 6px; }
-  button { min-height: 38px; padding: 7px 9px; font-size: 13px; white-space: nowrap; }
-  .sidebar-actions button { min-height: 36px; }
+  button { min-height: 36px; padding: 6px 8px; font-size: 13px; white-space: nowrap; }
+  .sidebar-actions button { min-height: 34px; }
   .modal input[type=text], .modal input[type=number], .modal select {
     padding: 9px; font-size: 16px;
   }
   .modal label.checkbox input[type=checkbox] { width: 20px; height: 20px; }
-  .modal { width: min(320px, 92vw); padding: 18px 20px; }
+  .modal { width: min(340px, 92vw); padding: 18px 20px; }
 
-  /* 頁面縮圖側邊欄在手機上改成從左邊滑出的抽屜，不佔用原本就很窄的畫面寬度，
-     用 #btnToggleSidebar 開關、點背景遮罩（#sidebarBackdrop）可以關閉 */
   .sidebar {
     display: flex; position: fixed; top: 0; bottom: 0; left: 0; z-index: 80;
     width: 78vw; max-width: 300px;
@@ -452,21 +557,13 @@ body.resizing-sidebar * { cursor: col-resize !important; }
     position: fixed; inset: 0; background: rgba(0, 0, 0, .5); z-index: 75;
   }
   .sidebar-backdrop[hidden] { display: none; }
-  /* 背景遮罩理論上 z-index 比抽屜本身低，點抽屜上的按鈕應該不會被遮罩擋到；但為了不管在哪種
-     瀏覽器／堆疊層級判定下都保證點得到按鈕，乾脆讓遮罩的範圍直接「讓開」抽屜佔的那一塊，
-     兩者在幾何上完全不重疊，就不會有任何遮罩蓋住按鈕、點了只關抽屜卻沒觸發按鈕本身動作的可能。 */
   #sidebarBackdrop { left: min(78vw, 300px); }
   #moreMenuBackdrop { right: min(78vw, 320px); }
 
-  /* 縮圖旋轉／更多選項按鈕：手機沒有 hover，固定顯示而不是靠滑鼠移過去才出現 */
   .thumb-item .thumb-rot { opacity: 1; top: 4px; right: 4px; gap: 4px; }
   .thumb-item .thumb-rot button { padding: 6px 8px; font-size: 13px; }
 
-  /* 「更多功能」面板：次要的檔案操作、檢視模式、翻頁、偏好設定收在這裡，
-     從右邊滑出（跟左邊滑出的頁面縮圖抽屜對稱），每個按鈕獨立一整排——
-     參考 iOS 設定／Apple Notes 選單的做法，一排一個選項，比擠成一堆
-     小按鈕好認也好按；點背景或右上角✕可以關閉 */
-  #moreMenuPanel {
+  #moreMenuPanel.mobile-only-panel {
     display: flex; flex-direction: column; gap: 16px;
     position: fixed; top: 0; bottom: 0; right: 0; z-index: 82;
     width: 78vw; max-width: 320px; padding: 16px;
@@ -479,10 +576,6 @@ body.resizing-sidebar * { cursor: col-resize !important; }
   #moreMenuPanel .group.tool-group { background: none; padding: 0; }
   #moreMenuPanel button { justify-content: flex-start; text-align: left; }
 
-  /* 瀏覽／標註工具改成固定在螢幕最下面的工具列（參考 Apple Notes 的標記工具列），
-     只顯示圖示、可以橫向滑動，不會因為放不下而被切到畫面外、完全點不到；
-     目前工具的選項（顏色／粗細／形狀種類）浮在工具列正上方，平常不佔空間，
-     選到有選項的工具才會冒出來 */
   .main { padding-bottom: 60px; }
   #toolGroup {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 70;
@@ -493,11 +586,10 @@ body.resizing-sidebar * { cursor: col-resize !important; }
   }
   #toolGroup .tool-btn { flex: 0 0 auto; min-width: 46px; font-size: 19px; padding: 8px; }
   #toolGroup .tool-btn .btn-label { display: none; }
-  #toolOptions:not(:empty) {
+  .viewer #toolOptions:not(:empty) {
     position: fixed; left: 0; right: 0; bottom: 58px; z-index: 71;
-    margin: 0; border-radius: 0; background: var(--toolbar-bg);
-    padding: 8px 10px; flex-wrap: wrap; row-gap: 8px;
+    margin: 0; padding: 8px 10px; flex-wrap: wrap; row-gap: 8px;
+    background: var(--toolbar-bg); border-top: 1px solid var(--toolbar-border);
     max-height: 38vh; overflow-y: auto;
-    box-shadow: 0 -2px 10px var(--toolbar-shadow);
   }
 }
