@@ -207,25 +207,61 @@ button.tool-btn[hidden] { display: none; }
 .main { flex: 1; display: flex; min-height: 0; }
 
 .sidebar {
-  width: 190px; background: var(--sidebar-bg); border-right: 1px solid var(--sidebar-border);
+  width: var(--sidebar-width, 190px); flex-shrink: 0; background: var(--sidebar-bg); border-right: 1px solid var(--sidebar-border);
   display: flex; flex-direction: column; min-height: 0;
 }
+.sidebar-resizer {
+  width: 6px; flex-shrink: 0; cursor: col-resize; position: relative; z-index: 10;
+  margin-left: -3px; margin-right: -3px; background: transparent; touch-action: none;
+}
+.sidebar-resizer::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px;
+  background: transparent; transition: background .15s;
+}
+.sidebar-resizer:hover::after, .sidebar-resizer.dragging::after { background: var(--accent-soft); }
+body.resizing-sidebar { cursor: col-resize; user-select: none; }
+body.resizing-sidebar * { cursor: col-resize !important; }
+
 .sidebar-head {
   padding: 8px 10px; font-size: 13px; font-weight: 700; color: var(--sidebar-head-text);
   border-bottom: 1px solid var(--sidebar-head-border); display: flex; flex-direction: column; gap: 6px;
 }
-.sidebar-head-row { display: flex; align-items: center; justify-content: space-between; }
+.sidebar-head-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.sidebar-head-btns { display: flex; align-items: center; gap: 4px; }
+#btnExpandSidebar { padding: 2px 6px; font-size: 12px; line-height: 1.2; min-height: auto; }
 #btnCloseSidebar { padding: 2px 8px; min-height: auto; }
+.sidebar-zoom { display: flex; align-items: center; gap: 4px; }
+.sidebar-zoom button {
+  padding: 1px 6px; font-size: 12px; line-height: 1.3; min-height: auto; flex-shrink: 0; border-radius: 6px;
+}
+.sidebar-zoom input[type=range] { flex: 1; min-width: 0; margin: 0; accent-color: var(--accent-soft); cursor: pointer; }
 .sidebar-actions { display: flex; gap: 6px; }
-.sidebar-actions button { flex: 1; font-size: 12px; padding: 4px 4px; }
-.thumb-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.sidebar-actions button { flex: 1; min-width: 0; font-size: 12px; padding: 4px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thumb-list {
+  flex: 1; overflow-y: auto; padding: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--thumb-size, 150px)), 1fr));
+  gap: 10px; align-content: start; align-items: start;
+}
 
 .thumb-item {
   border: 2px solid transparent; border-radius: 6px; padding: 4px; background: var(--thumb-bg);
-  cursor: grab; position: relative; text-align: center; user-select: none;
+  cursor: grab; position: relative; text-align: center; user-select: none; min-width: 0;
 }
+.thumb-item:active { cursor: grabbing; }
 .thumb-item.current { border-color: var(--accent-soft); }
-.thumb-item.dragging { opacity: .4; }
+.thumb-item.dragging { opacity: .35; }
+.thumb-item.drag-over-top::before,
+.thumb-item.drag-over-bottom::before,
+.thumb-item.drag-over-left::before,
+.thumb-item.drag-over-right::before {
+  content: ""; position: absolute; background: var(--accent-soft); border-radius: 2px;
+  box-shadow: 0 0 6px var(--accent-soft); pointer-events: none; z-index: 5;
+}
+.thumb-item.drag-over-top::before { left: -2px; right: -2px; top: -8px; height: 3px; }
+.thumb-item.drag-over-bottom::before { left: -2px; right: -2px; bottom: -8px; height: 3px; }
+.thumb-item.drag-over-left::before { top: -2px; bottom: -2px; left: -8px; width: 3px; }
+.thumb-item.drag-over-right::before { top: -2px; bottom: -2px; right: -8px; width: 3px; }
 .thumb-item img, .thumb-item canvas { width: 100%; display: block; box-shadow: 0 1px 4px var(--thumb-shadow); background: #fff; }
 .thumb-item .thumb-num { font-size: 11px; color: var(--thumb-num-text); margin-top: 4px; }
 .thumb-item .thumb-check {
@@ -238,8 +274,10 @@ button.tool-btn[hidden] { display: none; }
 .thumb-item .thumb-rot button {
   padding: 2px 4px; font-size: 11px; background: rgba(0,0,0,.55); border: none; color: #fff;
 }
+.thumb-list.compact-thumbs .thumb-check { width: 14px; height: 14px; top: 2px; left: 2px; }
+.thumb-list.compact-thumbs .thumb-rot button { padding: 1px 3px; font-size: 10px; }
 
-.thumb-drop-indicator { height: 3px; border-radius: 2px; background: var(--accent-soft); margin: -5px 0; flex-shrink: 0; }
+.thumb-drop-indicator { grid-column: 1 / -1; height: 3px; border-radius: 2px; background: var(--accent-soft); margin: -5px 0; }
 
 .thumb-context-menu {
   position: fixed; z-index: 400; background: var(--context-bg); border: 1px solid var(--context-border); border-radius: 8px; padding: 4px;
@@ -384,6 +422,7 @@ button.tool-btn[hidden] { display: none; }
 
 @media (max-width: 760px) {
   .mobile-only { display: inline-flex; }
+  .desktop-only, .sidebar-resizer { display: none; }
   .more-menu-head { display: flex; align-items: center; justify-content: space-between; font-weight: 700; }
 
   /* 頂端只留最常用的幾個按鈕（開檔／下載／復原／縮放／頁面／更多），

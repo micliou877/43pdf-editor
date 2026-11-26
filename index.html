@@ -78,7 +78,15 @@
     <div class="sidebar-head">
       <div class="sidebar-head-row">
         <span>頁面縮圖</span>
-        <button id="btnCloseSidebar" class="mobile-only" title="關閉">✕</button>
+        <div class="sidebar-head-btns">
+          <button id="btnExpandSidebar" class="desktop-only" type="button" title="展開／還原縮圖區寬度">⤢</button>
+          <button id="btnCloseSidebar" class="mobile-only" title="關閉">✕</button>
+        </div>
+      </div>
+      <div class="sidebar-zoom" title="調整縮圖大小（也可在縮圖區按住 Ctrl 滾動滾輪）">
+        <button id="btnThumbZoomOut" type="button" title="縮小縮圖">－</button>
+        <input type="range" id="thumbSizeRange" min="72" max="360" step="8" value="150" aria-label="縮圖大小">
+        <button id="btnThumbZoomIn" type="button" title="放大縮圖">＋</button>
       </div>
       <div class="sidebar-actions">
         <button id="btnExtract" disabled>📤 取出所選</button>
@@ -87,6 +95,7 @@
     </div>
     <div class="thumb-list" id="thumbList"></div>
   </aside>
+  <div class="sidebar-resizer" id="sidebarResizer" title="左右拖曳調整縮圖區寬度（雙擊還原預設）"></div>
 
   <section class="viewer" id="viewer">
     <div id="emptyState">

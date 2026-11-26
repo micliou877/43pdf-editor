@@ -574,16 +574,48 @@ function buildThumb(entry) {
   });
   check.addEventListener("change", updateSelectionButtons);
 
-  item.addEventListener("dragstart", () => item.classList.add("dragging"));
-  item.addEventListener("dragend", () => item.classList.remove("dragging"));
-  item.addEventListener("dragover", (e) => e.preventDefault());
-  item.addEventListener("drop", (e) => {
-    e.preventDefault();
+  item.addEventListener("dragstart", (e) => {
+    item.classList.add("dragging");
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      try { e.dataTransfer.setData("text/plain", String(state.pages.indexOf(entry))); } catch (err) {}
+    }
+  });
+  item.addEventListener("dragend", () => {
+    item.classList.remove("dragging");
+    clearThumbDragOver();
+  });
+  item.addEventListener("dragover", (e) => {
+    if (isFileDrag(e)) return;
     const draggingItem = thumbList.querySelector(".dragging");
-    if (!draggingItem || draggingItem === item) return;
+    if (!draggingItem) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    if (draggingItem === item) {
+      clearThumbDragOver();
+      return;
+    }
+    const r = item.getBoundingClientRect();
+    const multiCol = isThumbGridMultiCol();
+    const placeAfter = multiCol
+      ? e.clientX > r.left + r.width / 2
+      : e.clientY > r.top + r.height / 2;
+    setThumbDragOver(item, entry, multiCol ? (placeAfter ? "right" : "left") : (placeAfter ? "bottom" : "top"), placeAfter);
+  });
+  item.addEventListener("drop", (e) => {
+    if (isFileDrag(e)) return;
+    const draggingItem = thumbList.querySelector(".dragging");
+    if (!draggingItem) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const target = thumbDragTarget;
+    clearThumbDragOver();
+    if (draggingItem === item) return;
     const fromEntry = state.pages.find((p) => p.thumbItemEl === draggingItem);
-    const toEntry = entry;
-    reorderPages(fromEntry, toEntry);
+    const toIdx = state.pages.indexOf(entry);
+    if (!fromEntry || toIdx < 0) return;
+    const placeAfter = target && target.entry === entry ? target.placeAfter : false;
+    movePageToIndex(fromEntry, placeAfter ? toIdx + 1 : toIdx);
   });
 
   item.addEventListener("contextmenu", (e) => {
@@ -592,8 +624,28 @@ function buildThumb(entry) {
   });
 }
 
-const THUMB_TARGET_W = 320;
-const THUMB_MAX_H = 640;
+let thumbDragTarget = null;
+function isThumbGridMultiCol() {
+  const cols = getComputedStyle(thumbList).gridTemplateColumns;
+  return cols && cols.trim().split(/\s+/).length > 1;
+}
+function clearThumbDragOver() {
+  if (thumbDragTarget && thumbDragTarget.itemEl) {
+    thumbDragTarget.itemEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-left", "drag-over-right");
+  }
+  thumbDragTarget = null;
+}
+function setThumbDragOver(itemEl, entry, side, placeAfter) {
+  if (thumbDragTarget && thumbDragTarget.itemEl && thumbDragTarget.itemEl !== itemEl) {
+    thumbDragTarget.itemEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-left", "drag-over-right");
+  }
+  itemEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-left", "drag-over-right");
+  itemEl.classList.add("drag-over-" + side);
+  thumbDragTarget = { itemEl, entry, placeAfter };
+}
+
+const THUMB_TARGET_W = 520;
+const THUMB_MAX_H = 1040;
 
 // 編輯物件（拖曳／繪圖／輸入）會頻繁呼叫 redraw()，這裡做短時間節流，避免每次滑鼠移動都重繪縮圖
 function scheduleThumbRender(entry) {
@@ -687,8 +739,21 @@ function highlightCurrent(entry) {
 function reorderPages(fromEntry, toEntry) {
   const fromIdx = state.pages.indexOf(fromEntry);
   const toIdx = state.pages.indexOf(toEntry);
+  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return;
   state.pages.splice(fromIdx, 1);
   state.pages.splice(toIdx, 0, fromEntry);
+  reflowDomOrder();
+  renumber();
+  scheduleAutosave();
+}
+
+function movePageToIndex(fromEntry, insertIdx) {
+  const fromIdx = state.pages.indexOf(fromEntry);
+  if (fromIdx < 0) return;
+  const targetIdx = insertIdx > fromIdx ? insertIdx - 1 : insertIdx;
+  if (targetIdx === fromIdx) return;
+  state.pages.splice(fromIdx, 1);
+  state.pages.splice(targetIdx, 0, fromEntry);
   reflowDomOrder();
   renumber();
   scheduleAutosave();
@@ -862,10 +927,11 @@ function ensureThumbDropIndicator() {
   }
   return thumbDropIndicator;
 }
-function computeThumbDropIndex(clientY) {
+function computeThumbDropIndex(clientX, clientY) {
   for (let i = 0; i < state.pages.length; i++) {
     const r = state.pages[i].thumbItemEl.getBoundingClientRect();
-    if (clientY < r.top + r.height / 2) return i;
+    if (clientY < r.top) return i;
+    if (clientY <= r.bottom && clientX < r.left + r.width / 2) return i;
   }
   return state.pages.length;
 }
@@ -873,10 +939,17 @@ function isFileDrag(e) {
   return e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
 }
 thumbList.addEventListener("dragover", (e) => {
-  if (!isFileDrag(e)) return;
+  if (!isFileDrag(e)) {
+    // 拖曳縮圖排序時若滑鼠暫時停在卡片間距或空白處，仍維持可放置狀態，鬆開後放進最後提示的位置
+    if (thumbList.querySelector(".dragging")) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    }
+    return;
+  }
   e.preventDefault();
   const indicator = ensureThumbDropIndicator();
-  const idx = computeThumbDropIndex(e.clientY);
+  const idx = computeThumbDropIndex(e.clientX, e.clientY);
   indicator.hidden = false;
   if (idx >= state.pages.length) {
     thumbList.appendChild(indicator);
@@ -887,13 +960,27 @@ thumbList.addEventListener("dragover", (e) => {
 thumbList.addEventListener("dragleave", (e) => {
   if (!thumbList.contains(e.relatedTarget)) {
     if (thumbDropIndicator) thumbDropIndicator.hidden = true;
+    clearThumbDragOver();
   }
 });
 thumbList.addEventListener("drop", async (e) => {
-  if (!isFileDrag(e)) return;
+  if (!isFileDrag(e)) {
+    const draggingItem = thumbList.querySelector(".dragging");
+    if (draggingItem && thumbDragTarget) {
+      e.preventDefault();
+      const target = thumbDragTarget;
+      clearThumbDragOver();
+      const fromEntry = state.pages.find((p) => p.thumbItemEl === draggingItem);
+      const toIdx = state.pages.indexOf(target.entry);
+      if (fromEntry && toIdx >= 0) {
+        movePageToIndex(fromEntry, target.placeAfter ? toIdx + 1 : toIdx);
+      }
+    }
+    return;
+  }
   e.preventDefault();
   if (thumbDropIndicator) thumbDropIndicator.hidden = true;
-  const idx = computeThumbDropIndex(e.clientY);
+  const idx = computeThumbDropIndex(e.clientX, e.clientY);
   const files = Array.from(e.dataTransfer.files || []).filter((f) => f.type === "application/pdf");
   if (!files.length) return;
   let insertAt = idx;
@@ -4741,6 +4828,146 @@ function setSidebarOpen(open) {
 $("#btnToggleSidebar").addEventListener("click", () => setSidebarOpen(true));
 $("#btnCloseSidebar").addEventListener("click", () => setSidebarOpen(false));
 $("#sidebarBackdrop").addEventListener("click", () => setSidebarOpen(false));
+
+/* ====== 縮圖區寬度調整（拖曳分隔線／一鍵展開）與縮圖大小縮放（滑桿／按鈕／Ctrl+滾輪）======
+   把縮圖區拉寬＋縮圖調小，就可以一次在多欄格狀清單裡看到很多頁，直接用拖曳快速調整順序；
+   把縮圖調大時若縮圖區太窄，會順便幫你把縮圖區撐寬一點讓縮圖真的變大、不用手動拉兩次。 */
+const SIDEBAR_WIDTH_KEY = "pdf_editor_sidebar_width";
+const THUMB_SIZE_KEY = "pdf_editor_thumb_size";
+const DEFAULT_SIDEBAR_WIDTH = 190;
+const MIN_SIDEBAR_WIDTH = 140;
+const DEFAULT_THUMB_SIZE = 150;
+const MIN_THUMB_SIZE = 72;
+const MAX_THUMB_SIZE = 360;
+
+const sidebarEl = $("#sidebar");
+const sidebarResizerEl = $("#sidebarResizer");
+const btnExpandSidebar = $("#btnExpandSidebar");
+const thumbSizeRange = $("#thumbSizeRange");
+const btnThumbZoomOut = $("#btnThumbZoomOut");
+const btnThumbZoomIn = $("#btnThumbZoomIn");
+
+function maxSidebarWidth() {
+  return Math.max(220, window.innerWidth - 180);
+}
+function loadStoredNumber(key, fallback) {
+  try {
+    const v = Number(localStorage.getItem(key));
+    return Number.isFinite(v) && v > 0 ? v : fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+let sidebarWidth = loadStoredNumber(SIDEBAR_WIDTH_KEY, DEFAULT_SIDEBAR_WIDTH);
+let thumbSize = loadStoredNumber(THUMB_SIZE_KEY, DEFAULT_THUMB_SIZE);
+let savedNarrowSidebarWidth = DEFAULT_SIDEBAR_WIDTH;
+
+function isSidebarExpanded() {
+  return sidebarWidth >= Math.min(maxSidebarWidth() - 20, Math.max(420, window.innerWidth * 0.55));
+}
+function updateExpandSidebarBtn() {
+  if (!btnExpandSidebar) return;
+  const expanded = isSidebarExpanded();
+  btnExpandSidebar.textContent = expanded ? "⤡" : "⤢";
+  btnExpandSidebar.title = expanded ? "還原縮圖區寬度" : "展開縮圖區以便多欄拖曳排序";
+}
+function applySidebarWidth(width, opts) {
+  const clamped = Math.round(Math.max(MIN_SIDEBAR_WIDTH, Math.min(maxSidebarWidth(), width)));
+  sidebarWidth = clamped;
+  sidebarEl.style.setProperty("--sidebar-width", clamped + "px");
+  updateExpandSidebarBtn();
+  if (!opts || opts.save !== false) {
+    try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(clamped)); } catch (e) {}
+  }
+}
+function applyThumbSize(size, opts) {
+  const clamped = Math.round(Math.max(MIN_THUMB_SIZE, Math.min(MAX_THUMB_SIZE, size)));
+  thumbSize = clamped;
+  thumbList.style.setProperty("--thumb-size", clamped + "px");
+  thumbList.classList.toggle("compact-thumbs", clamped < 110);
+  if (thumbSizeRange) thumbSizeRange.value = String(clamped);
+  if (btnThumbZoomOut) btnThumbZoomOut.disabled = clamped <= MIN_THUMB_SIZE;
+  if (btnThumbZoomIn) btnThumbZoomIn.disabled = clamped >= MAX_THUMB_SIZE;
+  // 桌面版放大縮圖時，如果目前縮圖區比單張縮圖還窄，主動把縮圖區撐寬到裝得下，畫面才會立刻看到變大
+  if (opts && opts.autoExpand && window.innerWidth > 760) {
+    const needed = clamped + 40;
+    if (sidebarWidth < needed) applySidebarWidth(needed);
+  }
+  if (!opts || opts.save !== false) {
+    try { localStorage.setItem(THUMB_SIZE_KEY, String(clamped)); } catch (e) {}
+  }
+}
+
+applySidebarWidth(sidebarWidth, { save: false });
+applyThumbSize(thumbSize, { save: false });
+
+if (sidebarResizerEl) {
+  let resizing = false;
+  sidebarResizerEl.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || window.innerWidth <= 760) return;
+    e.preventDefault();
+    resizing = true;
+    sidebarResizerEl.classList.add("dragging");
+    document.body.classList.add("resizing-sidebar");
+    try { sidebarResizerEl.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  sidebarResizerEl.addEventListener("pointermove", (e) => {
+    if (!resizing) return;
+    const left = sidebarEl.getBoundingClientRect().left;
+    applySidebarWidth(e.clientX - left, { save: false });
+  });
+  const endResize = (e) => {
+    if (!resizing) return;
+    resizing = false;
+    sidebarResizerEl.classList.remove("dragging");
+    document.body.classList.remove("resizing-sidebar");
+    try { sidebarResizerEl.releasePointerCapture(e.pointerId); } catch (err) {}
+    applySidebarWidth(sidebarWidth, { save: true });
+  };
+  sidebarResizerEl.addEventListener("pointerup", endResize);
+  sidebarResizerEl.addEventListener("pointercancel", endResize);
+  sidebarResizerEl.addEventListener("dblclick", () => {
+    applySidebarWidth(DEFAULT_SIDEBAR_WIDTH);
+  });
+}
+
+if (btnExpandSidebar) {
+  btnExpandSidebar.addEventListener("click", () => {
+    if (isSidebarExpanded()) {
+      applySidebarWidth(savedNarrowSidebarWidth || DEFAULT_SIDEBAR_WIDTH);
+    } else {
+      savedNarrowSidebarWidth = sidebarWidth;
+      applySidebarWidth(Math.round(window.innerWidth * 0.72));
+    }
+  });
+}
+
+if (thumbSizeRange) {
+  thumbSizeRange.addEventListener("input", () => {
+    const next = Number(thumbSizeRange.value);
+    applyThumbSize(next, { autoExpand: next > thumbSize });
+  });
+}
+if (btnThumbZoomOut) {
+  btnThumbZoomOut.addEventListener("click", () => applyThumbSize(thumbSize - 24));
+}
+if (btnThumbZoomIn) {
+  btnThumbZoomIn.addEventListener("click", () => applyThumbSize(thumbSize + 24, { autoExpand: true }));
+}
+sidebarEl.addEventListener(
+  "wheel",
+  (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 16 : -16;
+    applyThumbSize(thumbSize + delta, { autoExpand: delta > 0 });
+  },
+  { passive: false }
+);
+window.addEventListener("resize", () => {
+  if (window.innerWidth > 760) applySidebarWidth(sidebarWidth, { save: false });
+});
 
 /* ====== 手機版：「更多功能」面板（次要的檔案操作／檢視模式／翻頁／偏好設定）======
    從右邊滑出，跟左邊滑出的頁面縮圖抽屜對稱；兩個抽屜互斥，開一個會自動關掉另一個，
