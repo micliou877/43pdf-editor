@@ -201,6 +201,7 @@ if ("launchQueue" in window) {
 }
 
 function clearAll() {
+  state.pages.forEach((p) => clearTimeout(p._thumbTimer));
   state.sources = [];
   state.pages = [];
   state.pageNumberConfig = null;
@@ -337,7 +338,7 @@ async function buildPageDOM(entry) {
   renumber();
 }
 
-async function renderPage(entry, zoom) {
+async function renderPage(entry, zoom, opts) {
   const viewport = nativeViewport(entry, zoom);
   const w = Math.round(entry.cropW * zoom * CSS_SCALE);
   const h = Math.round(entry.cropH * zoom * CSS_SCALE);
@@ -369,7 +370,7 @@ async function renderPage(entry, zoom) {
   entry.innerEl.style.height = h + "px";
 
   await renderTextLayer(entry, viewport, w, h);
-  redraw(entry);
+  redraw(entry, opts);
 }
 
 async function renderTextLayer(entry, viewport, w, h) {
@@ -591,16 +592,90 @@ function buildThumb(entry) {
   });
 }
 
+const THUMB_TARGET_W = 320;
+const THUMB_MAX_H = 640;
+
+// 編輯物件（拖曳／繪圖／輸入）會頻繁呼叫 redraw()，這裡做短時間節流，避免每次滑鼠移動都重繪縮圖
+function scheduleThumbRender(entry) {
+  if (!entry || !entry.thumbCanvasEl) return;
+  clearTimeout(entry._thumbTimer);
+  entry._thumbTimer = setTimeout(() => {
+    entry._thumbTimer = null;
+    if (entry.thumbCanvasEl && state.pages.includes(entry)) {
+      renderThumb(entry);
+    }
+  }, 120);
+}
+
 async function renderThumb(entry) {
-  const viewport = entry.pdfjsPage.getViewport({ scale: 0.18, rotation: (entry.baseRotation + entry.userDelta) % 360 });
+  if (!entry || !entry.thumbCanvasEl) return;
+  clearTimeout(entry._thumbTimer);
+  entry._thumbTimer = null;
+  const seq = (entry._thumbRenderSeq = (entry._thumbRenderSeq || 0) + 1);
+
+  ensureCropDefaults(entry);
+  const totalRotation = getPageRotation(entry);
+  const rotated = totalRotation === 90 || totalRotation === 270;
+  const cw = Math.max(1, entry.cropW);
+  const ch = Math.max(1, entry.cropH);
+  const dispW = rotated ? ch : cw;
+  const dispH = rotated ? cw : ch;
+  const scale = Math.min(THUMB_TARGET_W / dispW, THUMB_MAX_H / dispH);
+
+  const unrotW = Math.max(1, Math.round(cw * scale));
+  const unrotH = Math.max(1, Math.round(ch * scale));
+  const outW = rotated ? unrotH : unrotW;
+  const outH = rotated ? unrotW : unrotH;
+
+  // 先在未旋轉座標系合成「PDF 底圖（含裁切／延伸）＋所有物件／浮水印／頁碼」，
+  // 若頁面有旋轉再整張轉正貼到縮圖 canvas，確保縮圖與主畫面／匯出結果完全一致。
   const canvas = entry.thumbCanvasEl;
-  canvas.width = viewport.width;
-  canvas.height = viewport.height;
-  const ctx = canvas.getContext("2d");
-  try {
-    await entry.pdfjsPage.render({ canvasContext: ctx, viewport }).promise;
-  } catch (err) {
-    /* 忽略縮圖渲染錯誤 */
+  let workCanvas, workCtx;
+  if (totalRotation === 0) {
+    canvas.width = outW;
+    canvas.height = outH;
+    workCanvas = canvas;
+    workCtx = canvas.getContext("2d");
+  } else {
+    workCanvas = document.createElement("canvas");
+    workCanvas.width = unrotW;
+    workCanvas.height = unrotH;
+    workCtx = workCanvas.getContext("2d");
+  }
+
+  workCtx.fillStyle = "#ffffff";
+  workCtx.fillRect(0, 0, unrotW, unrotH);
+
+  if (entry.baseCanvasEl && entry.baseCanvasEl.width > 0 && entry.baseCanvasEl.height > 0) {
+    workCtx.drawImage(entry.baseCanvasEl, 0, 0, unrotW, unrotH);
+  } else {
+    try {
+      const viewport = entry.pdfjsPage.getViewport({
+        scale,
+        rotation: 0,
+        offsetX: -entry.cropX * scale,
+        offsetY: -entry.cropY * scale,
+      });
+      await entry.pdfjsPage.render({ canvasContext: workCtx, viewport }).promise;
+      if (entry._thumbRenderSeq !== seq) return;
+    } catch (err) {
+      /* 忽略縮圖底圖渲染錯誤 */
+    }
+  }
+
+  renderPageObjects(entry, workCtx, scale, { withHandles: false, noClear: true });
+
+  if (totalRotation !== 0) {
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext("2d");
+    ctx.save();
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, outW, outH);
+    ctx.translate(outW / 2, outH / 2);
+    ctx.rotate((totalRotation * Math.PI) / 180);
+    ctx.drawImage(workCanvas, -unrotW / 2, -unrotH / 2);
+    ctx.restore();
   }
 }
 
@@ -727,6 +802,7 @@ async function deleteSinglePage(entry) {
     setSelected(null);
     renderToolOptions();
   }
+  clearTimeout(entry._thumbTimer);
   entry.rowEl.remove();
   entry.thumbItemEl.remove();
   state.pages.splice(state.pages.indexOf(entry), 1);
@@ -881,6 +957,7 @@ $("#btnDeleteSelected").addEventListener("click", async () => {
     renderToolOptions();
   }
   toDelete.forEach((entry) => {
+    clearTimeout(entry._thumbTimer);
     entry.rowEl.remove();
     entry.thumbItemEl.remove();
     state.pages.splice(state.pages.indexOf(entry), 1);
@@ -960,7 +1037,7 @@ async function setZoom(next, opts) {
   // 所以縮放不顯示載入中——這個流程本來就快，不需要遮罩擋互動。
   try {
     for (const entry of state.pages) {
-      await renderPage(entry, state.zoom);
+      await renderPage(entry, state.zoom, { skipThumb: true });
       layoutPage(entry);
     }
     if (opts && opts.anchor) {
@@ -1270,10 +1347,11 @@ function setSelected(sel) {
 
 /* ---------------- 物件模型：繪製 ---------------- */
 
-function redraw(entry) {
+function redraw(entry, opts) {
   const ctx = entry.overlayCanvasEl.getContext("2d");
   const scale = BACKING_DPR * state.zoom;
   renderPageObjects(entry, ctx, scale, { withHandles: true, pasteboard: true });
+  if (!opts || !opts.skipThumb) scheduleThumbRender(entry);
 }
 
 const HIGHLIGHT_OPACITY = 0.42; // 同一批連續畫的螢光筆，不管塗幾筆、疊幾次，最後都只套用「一次」這個透明度，不會把底下蓋掉
@@ -1759,11 +1837,17 @@ function drawIndexMarkObject(ctx, obj, scale, entry) {
 }
 
 const watermarkImageCache = new Map(); // dataUrl -> Image，避免每頁各自重複載入同一張浮水印圖
-function getOrLoadWatermarkImage(dataUrl, onReady) {
+function getOrLoadWatermarkImage(dataUrl) {
   let img = watermarkImageCache.get(dataUrl);
   if (img) return img;
   img = new Image();
-  img.onload = onReady;
+  img.onload = () => {
+    state.pages.forEach((p) => {
+      if (p.watermark && p.watermark.mode === "image" && p.watermark.dataUrl === dataUrl) {
+        redraw(p);
+      }
+    });
+  };
   img.src = dataUrl;
   watermarkImageCache.set(dataUrl, img);
   return img;
@@ -1773,7 +1857,7 @@ function drawWatermarkObj(ctx, wm, scale, cw, ch, entry) {
   const rad = (wm.rotate * Math.PI) / 180;
 
   if (wm.mode === "image") {
-    const img = getOrLoadWatermarkImage(wm.dataUrl, () => entry && redraw(entry));
+    const img = getOrLoadWatermarkImage(wm.dataUrl);
     if (!img.complete || !img.naturalWidth) return;
     const wPx = wm.size * scale;
     const hPx = wPx * (img.naturalHeight / img.naturalWidth);
@@ -2469,8 +2553,9 @@ async function applyCrop(entry, x, y, w, h) {
   entry.cropY = y;
   entry.cropW = Math.max(CROP_MIN_SIZE, w);
   entry.cropH = Math.max(CROP_MIN_SIZE, h);
-  await renderPage(entry, state.zoom);
+  await renderPage(entry, state.zoom, { skipThumb: true });
   layoutPage(entry);
+  renderThumb(entry);
   scheduleAutosave();
   toast("已裁切頁面，雙擊頁面即可套用");
 }
@@ -4429,7 +4514,10 @@ async function tryRestoreEditableBackup(pdfjsDoc, fileName, isFirst) {
       await buildPageDOM(entry);
       buildThumb(entry);
     }
-    if (isFirst && manifest.pageNumberConfig) state.pageNumberConfig = manifest.pageNumberConfig;
+    if (isFirst && manifest.pageNumberConfig) {
+      state.pageNumberConfig = manifest.pageNumberConfig;
+      state.pages.forEach((p) => redraw(p));
+    }
     toast("偵測到先前用這個編輯器加過的物件，已還原成可以繼續編輯");
     return true;
   } catch (err) {
