@@ -2722,21 +2722,25 @@ function attachPageInteractions(entry) {
     const pt = eventToPoint(entry, e);
     const hit = hitTest(entry, pt);
     if (hit && hit.locked) {
+      e.stopPropagation();
       setSelected({ entry, objs: [hit] });
       redraw(entry);
       renderToolOptions();
       toast("此物件已鎖定，請先解鎖才能編輯", true);
     } else if (hit && hit.type === "text") {
+      e.stopPropagation();
       setSelected({ entry, objs: [hit] });
       redraw(entry);
       renderToolOptions();
       openObjectTextEditor(entry, hit, { selectAll: true });
     } else if (hit && (hit.type === "rect" || hit.type === "ellipse" || hit.type === "cloud")) {
+      e.stopPropagation();
       setSelected({ entry, objs: [hit] });
       redraw(entry);
       renderToolOptions();
       openShapeTextEditor(entry, hit);
     } else if (hit && hit.type === "indexmark") {
+      e.stopPropagation();
       setSelected({ entry, objs: [hit] });
       redraw(entry);
       renderToolOptions();
@@ -3609,9 +3613,12 @@ function openObjectTextEditor(entry, obj, opts) {
   editor.style.transform = obj.rotation ? `rotate(${obj.rotation}deg)` : "";
   editor.addEventListener("input", syncEditorSize);
 
+  editor.setAttribute("translate", "no");
+  editor.classList.add("notranslate");
   entry.innerEl.appendChild(editor);
   editor.focus();
-  if (opts.selectAll) editor.select();
+  // 延遲到 dblclick 事件結束後再全選文字，避免 Chrome 翻譯／字典擴充功能在雙擊瞬間偵測到選字而跳出黃色小框
+  if (opts.selectAll) setTimeout(() => { if (!committed) editor.select(); }, 0);
 
   let committed = false;
   const commit = (cancel) => {
@@ -3686,9 +3693,11 @@ function openShapeTextEditor(entry, obj) {
   // 編輯框的中心點就是 getBBox(obj) 的中心，用預設 transform-origin 轉，角度才會跟沒在編輯時
   // 畫出來的樣子一致，不會雙擊編輯時突然變回沒轉過的樣子。
   editor.style.transform = obj.rotation ? `rotate(${obj.rotation}deg)` : "";
+  editor.setAttribute("translate", "no");
+  editor.classList.add("notranslate");
   entry.innerEl.appendChild(editor);
   editor.focus();
-  editor.select();
+  setTimeout(() => { if (!committed) editor.select(); }, 0);
 
   let committed = false;
   const commit = (cancel) => {
@@ -3741,9 +3750,11 @@ function openIndexMarkEditor(entry, obj) {
   editor.style.textAlign = "center";
   editor.style.resize = "none";
   editor.style.background = "rgba(255,255,255,.9)";
+  editor.setAttribute("translate", "no");
+  editor.classList.add("notranslate");
   entry.innerEl.appendChild(editor);
   editor.focus();
-  editor.select();
+  setTimeout(() => { if (!committed) editor.select(); }, 0);
 
   let committed = false;
   const commit = (cancel) => {
