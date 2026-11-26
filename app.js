@@ -575,23 +575,25 @@ function buildThumb(entry) {
   check.addEventListener("change", updateSelectionButtons);
 
   item.addEventListener("dragstart", (e) => {
-    item.classList.add("dragging");
+    // 若拖曳的是已勾選的頁面，連同所有勾選頁面一起移動或複製；否則只處理這一頁
+    thumbDragEntries = entry.thumbCheckEl && entry.thumbCheckEl.checked
+      ? state.pages.filter((p) => p.thumbCheckEl && p.thumbCheckEl.checked)
+      : [entry];
+    thumbDragEntries.forEach((p) => p.thumbItemEl && p.thumbItemEl.classList.add("dragging"));
     if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.effectAllowed = "copyMove";
       try { e.dataTransfer.setData("text/plain", String(state.pages.indexOf(entry))); } catch (err) {}
     }
   });
   item.addEventListener("dragend", () => {
-    item.classList.remove("dragging");
-    clearThumbDragOver();
+    clearThumbDragState();
   });
   item.addEventListener("dragover", (e) => {
-    if (isFileDrag(e)) return;
-    const draggingItem = thumbList.querySelector(".dragging");
-    if (!draggingItem) return;
+    if (isFileDrag(e) || !thumbDragEntries.length) return;
+    const isCopy = !!(e.ctrlKey || e.metaKey);
     e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    if (draggingItem === item) {
+    if (e.dataTransfer) e.dataTransfer.dropEffect = isCopy ? "copy" : "move";
+    if (!isCopy && thumbDragEntries.includes(entry)) {
       clearThumbDragOver();
       return;
     }
@@ -600,22 +602,24 @@ function buildThumb(entry) {
     const placeAfter = multiCol
       ? e.clientX > r.left + r.width / 2
       : e.clientY > r.top + r.height / 2;
-    setThumbDragOver(item, entry, multiCol ? (placeAfter ? "right" : "left") : (placeAfter ? "bottom" : "top"), placeAfter);
+    const side = multiCol ? (placeAfter ? "right" : "left") : (placeAfter ? "bottom" : "top");
+    setThumbDragOver(item, entry, side, placeAfter, isCopy);
   });
-  item.addEventListener("drop", (e) => {
-    if (isFileDrag(e)) return;
-    const draggingItem = thumbList.querySelector(".dragging");
-    if (!draggingItem) return;
+  item.addEventListener("drop", async (e) => {
+    if (isFileDrag(e) || !thumbDragEntries.length) return;
     e.preventDefault();
     e.stopPropagation();
+    const isCopy = !!(e.ctrlKey || e.metaKey);
+    const entries = thumbDragEntries.slice();
     const target = thumbDragTarget;
-    clearThumbDragOver();
-    if (draggingItem === item) return;
-    const fromEntry = state.pages.find((p) => p.thumbItemEl === draggingItem);
+    clearThumbDragState();
+    if (!isCopy && entries.includes(entry)) return;
     const toIdx = state.pages.indexOf(entry);
-    if (!fromEntry || toIdx < 0) return;
+    if (toIdx < 0) return;
     const placeAfter = target && target.entry === entry ? target.placeAfter : false;
-    movePageToIndex(fromEntry, placeAfter ? toIdx + 1 : toIdx);
+    const insertIdx = placeAfter ? toIdx + 1 : toIdx;
+    if (isCopy) await duplicatePagesToIndex(entries, insertIdx);
+    else movePagesToIndex(entries, insertIdx);
   });
 
   item.addEventListener("contextmenu", (e) => {
@@ -624,6 +628,7 @@ function buildThumb(entry) {
   });
 }
 
+let thumbDragEntries = [];
 let thumbDragTarget = null;
 function isThumbGridMultiCol() {
   const cols = getComputedStyle(thumbList).gridTemplateColumns;
@@ -631,17 +636,23 @@ function isThumbGridMultiCol() {
 }
 function clearThumbDragOver() {
   if (thumbDragTarget && thumbDragTarget.itemEl) {
-    thumbDragTarget.itemEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-left", "drag-over-right");
+    thumbDragTarget.itemEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-left", "drag-over-right", "drag-copy");
   }
   thumbDragTarget = null;
 }
-function setThumbDragOver(itemEl, entry, side, placeAfter) {
+function clearThumbDragState() {
+  thumbDragEntries.forEach((p) => p.thumbItemEl && p.thumbItemEl.classList.remove("dragging"));
+  thumbDragEntries = [];
+  clearThumbDragOver();
+}
+function setThumbDragOver(itemEl, entry, side, placeAfter, isCopy) {
   if (thumbDragTarget && thumbDragTarget.itemEl && thumbDragTarget.itemEl !== itemEl) {
-    thumbDragTarget.itemEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-left", "drag-over-right");
+    thumbDragTarget.itemEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-left", "drag-over-right", "drag-copy");
   }
-  itemEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-left", "drag-over-right");
+  itemEl.classList.remove("drag-over-top", "drag-over-bottom", "drag-over-left", "drag-over-right", "drag-copy");
   itemEl.classList.add("drag-over-" + side);
-  thumbDragTarget = { itemEl, entry, placeAfter };
+  if (isCopy) itemEl.classList.add("drag-copy");
+  thumbDragTarget = { itemEl, entry, placeAfter, isCopy };
 }
 
 const THUMB_TARGET_W = 520;
@@ -747,13 +758,18 @@ function reorderPages(fromEntry, toEntry) {
   scheduleAutosave();
 }
 
-function movePageToIndex(fromEntry, insertIdx) {
-  const fromIdx = state.pages.indexOf(fromEntry);
-  if (fromIdx < 0) return;
-  const targetIdx = insertIdx > fromIdx ? insertIdx - 1 : insertIdx;
-  if (targetIdx === fromIdx) return;
-  state.pages.splice(fromIdx, 1);
-  state.pages.splice(targetIdx, 0, fromEntry);
+function movePagesToIndex(entries, insertIdx) {
+  if (!entries.length) return;
+  const movingSet = new Set(entries);
+  let targetIdx = 0;
+  for (let i = 0; i < insertIdx && i < state.pages.length; i++) {
+    if (!movingSet.has(state.pages[i])) targetIdx++;
+  }
+  const ordered = state.pages.filter((p) => movingSet.has(p));
+  const remaining = state.pages.filter((p) => !movingSet.has(p));
+  remaining.splice(targetIdx, 0, ...ordered);
+  if (remaining.every((p, i) => p === state.pages[i])) return;
+  state.pages = remaining;
   reflowDomOrder();
   renumber();
   scheduleAutosave();
@@ -779,9 +795,8 @@ async function insertEntries(entries, index) {
   scheduleAutosave();
 }
 
-function duplicatePage(entry) {
-  const idx = state.pages.indexOf(entry);
-  const clone = {
+function clonePageEntry(entry) {
+  return {
     sourceIndex: entry.sourceIndex,
     pageIndexInSource: entry.pageIndexInSource,
     pdfjsPage: entry.pdfjsPage,
@@ -792,8 +807,20 @@ function duplicatePage(entry) {
     history: [],
     cropX: entry.cropX, cropY: entry.cropY, cropW: entry.cropW, cropH: entry.cropH,
   };
-  insertEntries([clone], idx + 1);
-  toast("已複製頁面");
+}
+
+async function duplicatePagesToIndex(entries, insertIdx) {
+  if (!entries.length) return;
+  const clones = entries.map(clonePageEntry);
+  const clampedIdx = Math.max(0, Math.min(insertIdx, state.pages.length));
+  await insertEntries(clones, clampedIdx);
+  highlightCurrent(clones[0]);
+  toast(clones.length > 1 ? `已複製 ${clones.length} 頁` : "已複製頁面");
+}
+
+function duplicatePage(entry) {
+  const idx = state.pages.indexOf(entry);
+  duplicatePagesToIndex([entry], idx + 1);
 }
 
 async function insertBlankPage(referenceEntry) {
@@ -940,10 +967,23 @@ function isFileDrag(e) {
 }
 thumbList.addEventListener("dragover", (e) => {
   if (!isFileDrag(e)) {
-    // 拖曳縮圖排序時若滑鼠暫時停在卡片間距或空白處，仍維持可放置狀態，鬆開後放進最後提示的位置
-    if (thumbList.querySelector(".dragging")) {
+    // 拖曳縮圖排序／Ctrl 複製時，即使游標停在卡片間距或列表下方空白處也能持續顯示放置位置並成功放下
+    if (thumbDragEntries.length) {
+      const isCopy = !!(e.ctrlKey || e.metaKey);
       e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      if (e.dataTransfer) e.dataTransfer.dropEffect = isCopy ? "copy" : "move";
+      if (e.target === thumbList && state.pages.length) {
+        const idx = computeThumbDropIndex(e.clientX, e.clientY);
+        const multiCol = isThumbGridMultiCol();
+        const placeAfter = idx >= state.pages.length;
+        const targetEntry = placeAfter ? state.pages[state.pages.length - 1] : state.pages[idx];
+        if (!isCopy && thumbDragEntries.includes(targetEntry)) {
+          clearThumbDragOver();
+        } else {
+          const side = multiCol ? (placeAfter ? "right" : "left") : (placeAfter ? "bottom" : "top");
+          setThumbDragOver(targetEntry.thumbItemEl, targetEntry, side, placeAfter, isCopy);
+        }
+      }
     }
     return;
   }
@@ -965,15 +1005,18 @@ thumbList.addEventListener("dragleave", (e) => {
 });
 thumbList.addEventListener("drop", async (e) => {
   if (!isFileDrag(e)) {
-    const draggingItem = thumbList.querySelector(".dragging");
-    if (draggingItem && thumbDragTarget) {
+    if (thumbDragEntries.length && thumbDragTarget) {
       e.preventDefault();
+      const isCopy = !!(e.ctrlKey || e.metaKey);
+      const entries = thumbDragEntries.slice();
       const target = thumbDragTarget;
-      clearThumbDragOver();
-      const fromEntry = state.pages.find((p) => p.thumbItemEl === draggingItem);
+      clearThumbDragState();
+      if (!isCopy && entries.includes(target.entry)) return;
       const toIdx = state.pages.indexOf(target.entry);
-      if (fromEntry && toIdx >= 0) {
-        movePageToIndex(fromEntry, target.placeAfter ? toIdx + 1 : toIdx);
+      if (toIdx >= 0) {
+        const insertIdx = target.placeAfter ? toIdx + 1 : toIdx;
+        if (isCopy) await duplicatePagesToIndex(entries, insertIdx);
+        else movePagesToIndex(entries, insertIdx);
       }
     }
     return;

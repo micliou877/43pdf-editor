@@ -262,6 +262,7 @@ body.resizing-sidebar * { cursor: col-resize !important; }
 .thumb-item.drag-over-bottom::before { left: -2px; right: -2px; bottom: -8px; height: 3px; }
 .thumb-item.drag-over-left::before { top: -2px; bottom: -2px; left: -8px; width: 3px; }
 .thumb-item.drag-over-right::before { top: -2px; bottom: -2px; right: -8px; width: 3px; }
+.thumb-item.drag-copy::before { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
 .thumb-item img, .thumb-item canvas { width: 100%; display: block; box-shadow: 0 1px 4px var(--thumb-shadow); background: #fff; }
 .thumb-item .thumb-num { font-size: 11px; color: var(--thumb-num-text); margin-top: 4px; }
 .thumb-item .thumb-check {
